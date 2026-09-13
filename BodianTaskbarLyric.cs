@@ -37,9 +37,9 @@ using System.Security.AccessControl;
 
 [assembly: AssemblyTitle("波点音乐专属任务栏歌词")]
 [assembly: AssemblyProduct("BodianTaskbarLyric")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
-[assembly: AssemblyInformationalVersion("1.0.1")]
+[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyFileVersion("1.0.3.0")]
+[assembly: AssemblyInformationalVersion("1.0.3")]
 
 namespace BodianTaskbarLyric {
 
@@ -47,7 +47,7 @@ namespace BodianTaskbarLyric {
     // 1. 配置数据模型 (Config Model)
     // ==========================================
     public class AppConfig {
-        public const string APP_VERSION = "1.0.1";
+        public const string APP_VERSION = "1.0.3";
         public string Version = APP_VERSION;
 
         public string PositionMode = "left"; // "weather_right", "left" 或 "center"
@@ -84,6 +84,7 @@ namespace BodianTaskbarLyric {
         public bool HideWhenFullscreen = true;
         public bool ShowTranslation = true;
         public bool RunAsAdmin = true;
+        public bool SilentStart = true;
 
         public static AppConfig Load(string path) {
             AppConfig cfg = new AppConfig();
@@ -161,6 +162,7 @@ namespace BodianTaskbarLyric {
                             if (b.ContainsKey("hide_when_fullscreen")) cfg.HideWhenFullscreen = Convert.ToBoolean(b["hide_when_fullscreen"]);
                             if (b.ContainsKey("show_translation")) cfg.ShowTranslation = Convert.ToBoolean(b["show_translation"]);
                             if (b.ContainsKey("run_as_admin")) cfg.RunAsAdmin = Convert.ToBoolean(b["run_as_admin"]);
+                            if (b.ContainsKey("silent_start")) cfg.SilentStart = Convert.ToBoolean(b["silent_start"]);
                         }
 
                         if (dict.ContainsKey("ui") && dict["ui"] is Dictionary<string, object>) {
@@ -228,7 +230,8 @@ namespace BodianTaskbarLyric {
                     { "auto_hide_with_taskbar", AutoHideWithTaskbar },
                     { "hide_when_fullscreen", HideWhenFullscreen },
                     { "show_translation", ShowTranslation },
-                    { "run_as_admin", RunAsAdmin }
+                    { "run_as_admin", RunAsAdmin },
+                    { "silent_start", SilentStart }
                 };
                 dict["ui"] = new Dictionary<string, object> {
                     { "theme", UITheme }
@@ -369,6 +372,12 @@ namespace BodianTaskbarLyric {
         // SQLite API (系统内置 winsqlite3.dll)
         [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_open16", CallingConvention = CallingConvention.Cdecl)]
         public static extern int sqlite3_open16([MarshalAs(UnmanagedType.LPWStr)] string filename, out IntPtr db);
+
+        [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_open_v2", CallingConvention = CallingConvention.Cdecl)]
+        public static extern int sqlite3_open_v2(byte[] filenameUtf8, out IntPtr db, int flags, IntPtr zVfs);
+
+        [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_busy_timeout", CallingConvention = CallingConvention.Cdecl)]
+        public static extern int sqlite3_busy_timeout(IntPtr db, int ms);
 
         [DllImport("winsqlite3.dll", EntryPoint = "sqlite3_close", CallingConvention = CallingConvention.Cdecl)]
         public static extern int sqlite3_close(IntPtr db);
@@ -1112,6 +1121,10 @@ namespace BodianTaskbarLyric {
             CurrentPts = -1.0;
         }
 
+        public void ResetPts() {
+            CurrentPts = -1.0;
+        }
+
         private long _lastPtsLogTick = 0;
 
         private long ReadInt64(long address) {
@@ -1345,11 +1358,13 @@ namespace BodianTaskbarLyric {
         private double _lastMemPts = -1;
         private long _lastMemPtsChangeMs = 0;
         private volatile bool _memoryPtsStale = false;
+        private volatile bool _waitingForTrackReset = false;
+        private long _trackSwitchTick = 0;
 
         private MpvMemoryReader _memReader = new MpvMemoryReader();
 
         public bool IsMemorySyncActive {
-            get { return _memReader != null && _memReader.IsAvailable && _memReader.CurrentPts >= 0 && !_memoryPtsStale; }
+            get { return _memReader != null && _memReader.IsAvailable && _memReader.CurrentPts >= 0 && !_memoryPtsStale && !_waitingForTrackReset; }
         }
 
         public bool IsMemoryAccessDenied {
@@ -1357,6 +1372,7 @@ namespace BodianTaskbarLyric {
         }
 
         public event Action<SongInfo, ImageSource> OnSongChanged;
+        public event Action<ImageSource> OnCoverChanged;
         public event Action<LyricLine, int> OnLyricChanged;
         public event Action<bool> OnPlayStateChanged;
         public event Action<bool> OnProcessStateChanged;
@@ -1460,6 +1476,57 @@ namespace BodianTaskbarLyric {
             } catch { }
         }
 
+        private void HandleSongLogLine(string line) {
+            try {
+                if (string.IsNullOrEmpty(line)) return;
+
+                // 场景 1：歌曲完整参数信息 (包含完整元数据)
+                int idxFull = line.IndexOf("歌曲的完整参数信息:");
+                if (idxFull >= 0) {
+                    string payload = line.Substring(idxFull + "歌曲的完整参数信息:".Length).Trim();
+                    Match mId = Regex.Match(payload, @"\bid:\s*(\d+)");
+                    if (!mId.Success) return;
+
+                    long id = long.Parse(mId.Groups[1].Value);
+                    if (CurrentSong != null && CurrentSong.Id == id && _lyrics != null && _lyrics.Count > 0) {
+                        return;
+                    }
+
+                    SongInfo song = new SongInfo();
+                    song.Id = id;
+
+                    Match mName = Regex.Match(payload, @"\bname:\s*(.*?)(?=,\s*[a-zA-Z0-9_]+:|\}$)");
+                    if (mName.Success) song.Title = mName.Groups[1].Value.Trim();
+
+                    Match mArtist = Regex.Match(payload, @"\bartist:\s*(.*?)(?=,\s*[a-zA-Z0-9_]+:|\}$)");
+                    if (mArtist.Success) song.Artist = mArtist.Groups[1].Value.Trim();
+
+                    Match mAlbum = Regex.Match(payload, @"\balbum:\s*(.*?)(?=,\s*[a-zA-Z0-9_]+:|\}$)");
+                    if (mAlbum.Success) song.Album = mAlbum.Groups[1].Value.Trim();
+
+                    Match mDur = Regex.Match(payload, @"\bduration:\s*(\d+)");
+                    if (mDur.Success) {
+                        int dur;
+                        if (int.TryParse(mDur.Groups[1].Value, out dur)) song.Duration = dur;
+                    }
+
+                    Match mPic120 = Regex.Match(payload, @"\balbumPic120:\s*([^,\s\}]+)");
+                    if (mPic120.Success) {
+                        song.PicUrl = mPic120.Groups[1].Value.Trim();
+                    } else {
+                        Match mPic = Regex.Match(payload, @"\balbumPic:\s*([^,\s\}]+)");
+                        if (mPic.Success) song.PicUrl = mPic.Groups[1].Value.Trim();
+                    }
+
+                    Program.Log(string.Format("[LogMonitor] Song detected from log (full info): id={0}, name='{1}', artist='{2}'",
+                        song.Id, song.Title, song.Artist));
+                    SwitchToSong(song, null, false);
+                }
+            } catch (Exception ex) {
+                Program.Log("[LogMonitor] HandleSongLogLine EX: " + ex.ToString());
+            }
+        }
+
         public static ImageSource CreateDefaultBodianIcon(int size) {
             DrawingVisual dv = new DrawingVisual();
             using (DrawingContext dc = dv.RenderOpen()) {
@@ -1496,9 +1563,6 @@ namespace BodianTaskbarLyric {
 
         // 启动后台持续监听线程
         public void Start() {
-            Thread dbWorker = new Thread(DbWorkerLoop) { IsBackground = true };
-            dbWorker.Start();
-
             Thread logWorker = new Thread(LogMonitorLoop) { IsBackground = true };
             logWorker.Start();
 
@@ -1511,15 +1575,6 @@ namespace BodianTaskbarLyric {
             ImageSource img = LoadCoverImage(songId, url);
             _currentCover = img != null ? img : DefaultCover;
             return _currentCover;
-        }
-
-        private void DbWorkerLoop() {
-            while (true) {
-                try {
-                    CheckDatabase();
-                } catch { }
-                Thread.Sleep(300);
-            }
         }
 
         private void PlaybackLoop() {
@@ -1545,6 +1600,31 @@ namespace BodianTaskbarLyric {
                     _memReader.Tick();
                     if (_memReader.IsAvailable && _memReader.CurrentPts >= 0) {
                         double memPts = _memReader.CurrentPts;
+
+                        // 核心防跳机制：切歌瞬时底层 MPV 仍需 200~350ms 释放并重置旧音频
+                        // 在 MPV 进度尚未归零前（仍残留上一首歌的 134s、75s 等秒数），坚决屏蔽该旧进度，杜绝切歌时歌词跳跃
+                        if (_waitingForTrackReset) {
+                            if (memPts <= 1.5) {
+                                _waitingForTrackReset = false;
+                                Program.Log(string.Format("[PlaybackLoop] MPV reset confirmed: memPts={0:F2}s", memPts));
+                                _lastMemPts = memPts;
+                                _lastMemPtsChangeMs = now;
+                                _memoryPtsStale = false;
+                                lock (_timeLock) {
+                                    _playTimeOffset = memPts;
+                                    if (IsPlaying) _playStopwatch.Restart();
+                                    else _playStopwatch.Reset();
+                                }
+                            } else if (now - _trackSwitchTick > 2500) {
+                                _waitingForTrackReset = false;
+                                Program.Log(string.Format("[PlaybackLoop] Track reset wait timeout: memPts={0:F2}s", memPts));
+                            } else {
+                                UpdatePlaybackTime();
+                                Thread.Sleep(25);
+                                continue;
+                            }
+                        }
+
                         bool hadPreviousMemPts = _lastMemPts >= 0;
                         double previousMemPts = _lastMemPts;
                         double memDelta = hadPreviousMemPts ? memPts - previousMemPts : 0;
@@ -1597,31 +1677,38 @@ namespace BodianTaskbarLyric {
         private void CheckDatabase() {
             if (!File.Exists(_dbPath)) return;
 
-            IntPtr db;
-            int rc = Win32.sqlite3_open16(_dbPath, out db);
-            if (rc != 0) return;
+            IntPtr db = IntPtr.Zero;
+            IntPtr stmt = IntPtr.Zero;
+            try {
+                byte[] pathBytes = Encoding.UTF8.GetBytes(_dbPath + "\0");
+                int rc = Win32.sqlite3_open_v2(pathBytes, out db, 0x00000001, IntPtr.Zero); // 0x00000001 = SQLITE_OPEN_READONLY
+                if (rc != 0) return;
 
-            IntPtr stmt;
-            string sql = "SELECT ord, id, json, time FROM hist_song ORDER BY ord DESC LIMIT 1;";
-            rc = Win32.sqlite3_prepare16_v2(db, sql, -1, out stmt, IntPtr.Zero);
-            if (rc == 0 && Win32.sqlite3_step(stmt) == 100) {
-                long ord = Win32.sqlite3_column_int64(stmt, 0);
-                long id = Win32.sqlite3_column_int64(stmt, 1);
-                IntPtr textPtr = Win32.sqlite3_column_text16(stmt, 2);
-                string json = textPtr != IntPtr.Zero ? Marshal.PtrToStringUni(textPtr) : "";
-                IntPtr timePtr = Win32.sqlite3_column_text16(stmt, 3);
-                string timeStr = timePtr != IntPtr.Zero ? Marshal.PtrToStringUni(timePtr) : "";
-                _lastSongTimeStr = timeStr;
+                Win32.sqlite3_busy_timeout(db, 1000);
 
-                if (ord != _lastOrd) {
-                    bool isFirstRun = (_lastOrd == -1);
-                    _lastOrd = ord;
-                    HandleNewSong(id, json, timeStr, isFirstRun);
+                string sql = "SELECT ord, id, json, time FROM hist_song ORDER BY ord DESC LIMIT 1;";
+                rc = Win32.sqlite3_prepare16_v2(db, sql, -1, out stmt, IntPtr.Zero);
+                if (rc == 0 && Win32.sqlite3_step(stmt) == 100) {
+                    long ord = Win32.sqlite3_column_int64(stmt, 0);
+                    long id = Win32.sqlite3_column_int64(stmt, 1);
+                    IntPtr textPtr = Win32.sqlite3_column_text16(stmt, 2);
+                    string json = textPtr != IntPtr.Zero ? Marshal.PtrToStringUni(textPtr) : "";
+                    IntPtr timePtr = Win32.sqlite3_column_text16(stmt, 3);
+                    string timeStr = timePtr != IntPtr.Zero ? Marshal.PtrToStringUni(timePtr) : "";
+                    _lastSongTimeStr = timeStr;
+
+                    if (ord != _lastOrd) {
+                        bool isFirstRun = (_lastOrd == -1);
+                        _lastOrd = ord;
+                        HandleNewSong(id, json, timeStr, isFirstRun);
+                    }
                 }
+            } catch (Exception ex) {
+                Program.Log("[CheckDatabase] EX: " + ex.ToString());
+            } finally {
+                if (stmt != IntPtr.Zero) Win32.sqlite3_finalize(stmt);
+                if (db != IntPtr.Zero) Win32.sqlite3_close(db);
             }
-
-            if (stmt != IntPtr.Zero) Win32.sqlite3_finalize(stmt);
-            if (db != IntPtr.Zero) Win32.sqlite3_close(db);
         }
 
         private void HandleNewSong(long id, string json, string timeStr, bool isFirstRun) {
@@ -1631,24 +1718,57 @@ namespace BodianTaskbarLyric {
 
                 SongInfo song = new SongInfo();
                 song.Id = id;
-                if (dict.ContainsKey("name") && dict["name"] != null) song.Title = dict["name"].ToString();
-                if (dict.ContainsKey("artist") && dict["artist"] != null) song.Artist = dict["artist"].ToString();
-                if (dict.ContainsKey("album") && dict["album"] != null) song.Album = dict["album"].ToString();
-                if (dict.ContainsKey("duration") && dict["duration"] != null) song.Duration = Convert.ToInt32(dict["duration"]);
-                if (dict.ContainsKey("albumPic120") && dict["albumPic120"] != null) song.PicUrl = dict["albumPic120"].ToString();
-                else if (dict.ContainsKey("albumPic") && dict["albumPic"] != null) song.PicUrl = dict["albumPic"].ToString();
+                if (dict != null) {
+                    if (dict.ContainsKey("name") && dict["name"] != null) song.Title = dict["name"].ToString();
+                    if (dict.ContainsKey("artist") && dict["artist"] != null) song.Artist = dict["artist"].ToString();
+                    if (dict.ContainsKey("album") && dict["album"] != null) song.Album = dict["album"].ToString();
+                    if (dict.ContainsKey("duration") && dict["duration"] != null) song.Duration = Convert.ToInt32(dict["duration"]);
+                    if (dict.ContainsKey("albumPic120") && dict["albumPic120"] != null) song.PicUrl = dict["albumPic120"].ToString();
+                    else if (dict.ContainsKey("albumPic") && dict["albumPic"] != null) song.PicUrl = dict["albumPic"].ToString();
+                }
+
+                SwitchToSong(song, timeStr, isFirstRun);
+            } catch (Exception ex) {
+                Program.Log("[Engine] HandleNewSong EX: " + ex.ToString());
+            }
+        }
+
+        private void SwitchToSong(SongInfo song, string timeStr, bool isFirstRun) {
+            if (song == null) return;
+            try {
+                if (!isFirstRun && CurrentSong != null && CurrentSong.Id == song.Id) {
+                    if (!string.IsNullOrEmpty(song.PicUrl) && (_currentCover == null || _currentCover == DefaultCover)) {
+                        ThreadPool.QueueUserWorkItem(state => {
+                            try {
+                                ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl);
+                                if (loaded != null && CurrentSong != null && CurrentSong.Id == song.Id) {
+                                    _currentCover = loaded;
+                                    if (OnCoverChanged != null) OnCoverChanged(_currentCover);
+                                }
+                            } catch { }
+                        });
+                    }
+                    return;
+                }
 
                 CurrentSong = song;
                 _currentCover = null;
                 _lastMemPts = -1;
                 _lastMemPtsChangeMs = 0;
                 _memoryPtsStale = false;
+                if (!isFirstRun) {
+                    _waitingForTrackReset = true;
+                    _trackSwitchTick = Environment.TickCount;
+                } else {
+                    _waitingForTrackReset = false;
+                }
+                if (_memReader != null) _memReader.ResetPts();
                 lock (_timeLock) {
                     _lyrics = new List<LyricLine>();
                     _currentLyricIndex = -1;
                 }
-                Program.Log(string.Format("[Engine] HandleNewSong: ord={0}, id={1}, title='{2}', artist='{3}', dur={4}", _lastOrd, id, song.Title, song.Artist, song.Duration));
-
+                Program.Log(string.Format("[Engine] SwitchToSong: ord={0}, id={1}, title='{2}', artist='{3}', dur={4}, isFirstRun={5}",
+                    _lastOrd, song.Id, song.Title, song.Artist, song.Duration, isFirstRun));
 
                 bool wasPlaying = IsPlaying;
                 if (isFirstRun) {
@@ -1663,23 +1783,36 @@ namespace BodianTaskbarLyric {
 
                 if (OnPlayStateChanged != null) OnPlayStateChanged(IsPlaying);
 
+                if (OnSongChanged != null) {
+                    OnSongChanged(song, DefaultCover);
+                }
+
                 ThreadPool.QueueUserWorkItem(state => {
-                    ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl);
-                    _currentCover = loaded != null ? loaded : DefaultCover;
-                    if (OnSongChanged != null) OnSongChanged(song, _currentCover);
+                    try {
+                        ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl);
+                        _currentCover = loaded != null ? loaded : DefaultCover;
+                        if (CurrentSong != null && CurrentSong.Id == song.Id) {
+                            if (OnCoverChanged != null) OnCoverChanged(_currentCover);
+                        }
+                    } catch { }
                 });
 
                 ThreadPool.QueueUserWorkItem(state => {
-                    List<LyricLine> list = FetchLyrics(song.Id);
-                    lock (_timeLock) {
-                        _lyrics = list;
-                        _currentLyricIndex = -1;
-                    }
-                    Program.Log(string.Format("[Engine] FetchLyrics complete for '{0}' (count={1})", song.Title, list != null ? list.Count : 0));
-                    UpdatePlaybackTime();
+                    try {
+                        List<LyricLine> list = FetchLyrics(song.Id, song.Title);
+                        if (CurrentSong != null && CurrentSong.Id == song.Id) {
+                            lock (_timeLock) {
+                                _lyrics = list;
+                                _currentLyricIndex = -1;
+                            }
+                            Program.Log(string.Format("[Engine] FetchLyrics complete for '{0}' (count={1})", song.Title, list != null ? list.Count : 0));
+                            UpdatePlaybackTime();
+                        }
+                    } catch { }
                 });
-
-            } catch { }
+            } catch (Exception ex) {
+                Program.Log("[Engine] SwitchToSong EX: " + ex.ToString());
+            }
         }
 
         private void UpdatePlaybackTime() {
@@ -1698,14 +1831,12 @@ namespace BodianTaskbarLyric {
 
             if (activeIndex != _currentLyricIndex) {
                 _currentLyricIndex = activeIndex;
-                if (OnLyricChanged != null) {
-                    LyricLine line = activeIndex >= 0 ? _lyrics[activeIndex] : new LyricLine {
-                        TimeSec = 0,
-                        Original = CurrentSong != null ? CurrentSong.Title : "",
-                        Translation = CurrentSong != null ? CurrentSong.Artist : ""
-                    };
-                    Program.Log(string.Format("[LyricChanged] Sec={0:F2}, idx={1}: {2}", curSec, activeIndex, line.Original));
-                    OnLyricChanged(line, activeIndex);
+                if (activeIndex >= 0) {
+                    if (OnLyricChanged != null) {
+                        LyricLine line = _lyrics[activeIndex];
+                        Program.Log(string.Format("[LyricChanged] Sec={0:F2}, idx={1}: {2}", curSec, activeIndex, line.Original));
+                        OnLyricChanged(line, activeIndex);
+                    }
                 }
             }
         }
@@ -1733,9 +1864,16 @@ namespace BodianTaskbarLyric {
                                     using (StreamReader sr = new StreamReader(fs, Encoding.UTF8)) {
                                         string line;
                                         bool? lastEvent = null;
+                                        string lastSongLine = null;
                                         while ((line = sr.ReadLine()) != null) {
+                                            if (line.Contains("歌曲的完整参数信息:")) {
+                                                lastSongLine = line;
+                                            }
                                             if (line.Contains("mpv playing event=true")) lastEvent = true;
                                             else if (line.Contains("mpv playing event=false")) lastEvent = false;
+                                        }
+                                        if (lastSongLine != null) {
+                                            HandleSongLogLine(lastSongLine);
                                         }
                                         if (lastEvent.HasValue) {
                                             bool playState = lastEvent.Value && IsBodianProcessRunning();
@@ -1756,6 +1894,7 @@ namespace BodianTaskbarLyric {
                                         using (StreamReader sr = new StreamReader(fs, Encoding.UTF8)) {
                                             string line;
                                             while ((line = sr.ReadLine()) != null) {
+                                                HandleSongLogLine(line);
                                                 HandlePositionLogLine(line);
                                                 if (line.Contains("mpv playing event=true") && IsBodianProcessRunning()) {
                                                     SetPlayingState(true);
@@ -1799,7 +1938,49 @@ namespace BodianTaskbarLyric {
             return null;
         }
 
-        private List<LyricLine> FetchLyrics(long songId) {
+        private static bool IsSongTitleLine(string text, double sec, string songTitle) {
+            if (string.IsNullOrEmpty(text)) return true;
+            if (sec > 5.0) return false;
+
+            string t = text.Trim();
+            if (t.Length == 0) return true;
+
+            // 1. 如果匹配当前歌名（完全匹配、去除括号后缀如 (Live) 的歌名、或者带有连字符的 "歌名 - 歌手"）
+            if (!string.IsNullOrEmpty(songTitle)) {
+                string cleanTitle = songTitle.Trim();
+                if (string.Equals(t, cleanTitle, StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+
+                // 去除括号后缀（如 " (Live)", " [伴奏]"）提取纯标题名
+                string baseTitle = Regex.Replace(cleanTitle, @"\s*[\(\[（【].*?[\)\]）】]", "").Trim();
+                if (!string.IsNullOrEmpty(baseTitle) && string.Equals(t, baseTitle, StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+
+                string checkTitle = !string.IsNullOrEmpty(baseTitle) && baseTitle.Length >= 2 ? baseTitle : cleanTitle;
+                if (checkTitle.Length >= 2 && t.IndexOf(checkTitle, StringComparison.OrdinalIgnoreCase) >= 0) {
+                    if (t.Contains(" - ") || t.Contains(" — ") || t.Contains(" / ") || t.Contains(" · ") ||
+                        t.StartsWith("歌名") || t.StartsWith("歌曲") || t.StartsWith("曲名") ||
+                        t.StartsWith("Title", StringComparison.OrdinalIgnoreCase)) {
+                        return true;
+                    }
+                }
+            }
+
+            // 2. 0~2.5 秒内带有连字符或歌名标识的分隔行（如 "Title - Artist", "歌名：xxx"）
+            if (sec <= 2.5) {
+                if (t.Contains(" - ") || t.Contains(" — ") ||
+                    t.StartsWith("歌名") || t.StartsWith("歌曲") || t.StartsWith("曲名") ||
+                    t.StartsWith("Title", StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private List<LyricLine> FetchLyrics(long songId, string songTitle) {
             List<LyricLine> list = new List<LyricLine>();
             try {
                 string rawQ = string.Format("type=lyric&req=2&lrcx=1&rid={0}&songname=&artist=&corp=kuwo&fromchannel=bodian", songId);
@@ -1850,7 +2031,8 @@ namespace BodianTaskbarLyric {
                             }
                         } else {
                             string text = Regex.Replace(content, @"<[^>]+>", "").Trim();
-                            if (!string.IsNullOrEmpty(text) && !text.StartsWith("[")) {
+                            bool isHeaderTitle = (list.Count == 0 || totalSec <= 1.0) && IsSongTitleLine(text, totalSec, songTitle);
+                            if (!string.IsNullOrEmpty(text) && !text.StartsWith("[") && !isHeaderTitle) {
                                 LyricLine cur = new LyricLine {
                                     TimeSec = totalSec,
                                     Original = text,
@@ -1948,6 +2130,7 @@ namespace BodianTaskbarLyric {
             }
 
             _engine.OnSongChanged += Engine_OnSongChanged;
+            _engine.OnCoverChanged += Engine_OnCoverChanged;
             _engine.OnLyricChanged += Engine_OnLyricChanged;
             _engine.OnPlayStateChanged += playing => {
                 Dispatcher.Invoke(() => UpdateRotationState());
@@ -2553,6 +2736,12 @@ namespace BodianTaskbarLyric {
             });
         }
 
+        private void Engine_OnCoverChanged(ImageSource cover) {
+            Dispatcher.Invoke(() => {
+                _coverBrush.ImageSource = cover != null ? cover : BodianEngine.DefaultCover;
+            });
+        }
+
         private void Engine_OnLyricChanged(LyricLine line, int index) {
             Dispatcher.Invoke(() => {
                 try {
@@ -2697,6 +2886,7 @@ namespace BodianTaskbarLyric {
         private CapsuleSwitch _swAutoHide;
         private CapsuleSwitch _swHideWhenFullscreen;
         private CapsuleSwitch _swAutoStart;
+        private CapsuleSwitch _swSilentStart;
         private CapsuleSwitch _swRunAsAdmin;
 
         // 管理员权限与同步状态指示
@@ -2740,6 +2930,12 @@ namespace BodianTaskbarLyric {
                 Dispatcher.Invoke(() => {
                     _songTitleText.Text = song.Title;
                     _songArtistText.Text = string.Format("{0}  ·  {1}", song.Artist, song.Album);
+                    _songCoverBrush.ImageSource = cover != null ? cover : BodianEngine.DefaultCover;
+                });
+            };
+
+            _engine.OnCoverChanged += cover => {
+                Dispatcher.Invoke(() => {
                     _songCoverBrush.ImageSource = cover != null ? cover : BodianEngine.DefaultCover;
                 });
             };
@@ -3644,6 +3840,17 @@ namespace BodianTaskbarLyric {
             _swAutoStart.Unchecked += (s, e) => Win32.SetAutoStart(false);
             form4.Children.Add(CreateOptionCard("开机自动启动", "", _swAutoStart));
 
+            _swSilentStart = new CapsuleSwitch();
+            _swSilentStart.Checked += (s, e) => {
+                _config.SilentStart = true;
+                _config.Save(_configPath);
+            };
+            _swSilentStart.Unchecked += (s, e) => {
+                _config.SilentStart = false;
+                _config.Save(_configPath);
+            };
+            form4.Children.Add(CreateOptionCard("启动时静默", "", _swSilentStart));
+
             _swRunAsAdmin = new CapsuleSwitch();
             _swRunAsAdmin.Checked += (s, e) => {
                 _config.RunAsAdmin = true;
@@ -4355,6 +4562,7 @@ namespace BodianTaskbarLyric {
             _swAutoHide.SetChecked(_config.AutoHideWithTaskbar, false);
             _swHideWhenFullscreen.SetChecked(_config.HideWhenFullscreen, false);
             _swAutoStart.SetChecked(Win32.IsAutoStartEnabled(), false);
+            _swSilentStart.SetChecked(_config.SilentStart, false);
             _swRunAsAdmin.SetChecked(_config.RunAsAdmin, false);
             UpdateAdminStatusCard();
 
@@ -4405,6 +4613,7 @@ namespace BodianTaskbarLyric {
             _config.ShowBackgroundCard = (_swCardBg.IsChecked == true);
             _config.AutoHideWithTaskbar = (_swAutoHide.IsChecked == true);
             _config.HideWhenFullscreen = (_swHideWhenFullscreen.IsChecked == true);
+            _config.SilentStart = (_swSilentStart.IsChecked == true);
             _config.RunAsAdmin = (_swRunAsAdmin.IsChecked == true);
 
             Win32.SetAutoStart(_swAutoStart.IsChecked == true);
@@ -4515,7 +4724,7 @@ namespace BodianTaskbarLyric {
                 Log("Config loaded (v" + config.Version + ").");
 
                 // 核心特性：默认以管理员权限运行开关
-                if (config.RunAsAdmin && !Win32.IsAdministrator()) {
+                if (config.RunAsAdmin && !Win32.IsAdministrator() && (args == null || Array.IndexOf(args, "--no-elevation") < 0)) {
                     try {
                         ProcessStartInfo psi = new ProcessStartInfo {
                             FileName = Process.GetCurrentProcess().MainModule.FileName,
@@ -4628,8 +4837,10 @@ namespace BodianTaskbarLyric {
                 Log("TrayIcon created.");
 
                 overlay.Show();
-                settingsWin.Show();
-                Log("Windows shown.");
+                if (!config.SilentStart) {
+                    settingsWin.Show();
+                }
+                Log("Windows shown (SilentStart=" + config.SilentStart + ").");
 
                 // 3. 启动后台线程监听
                 engine.Start();
