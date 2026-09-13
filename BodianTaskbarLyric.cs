@@ -4864,8 +4864,10 @@ namespace BodianTaskbarLyric {
                 _trayIcon = new NotifyIcon();
                 _trayIcon.Text = "波点音乐 - 任务栏歌词 v" + AppConfig.APP_VERSION;
                 try {
-                    string appIco = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
-                    string icoPng = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ico.png");
+                    string appIco = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "app.ico");
+                    if (!File.Exists(appIco)) appIco = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+                    string icoPng = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "assets", "ico.png");
+                    if (!File.Exists(icoPng)) icoPng = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ico.png");
                     if (File.Exists(appIco)) {
                         _trayIcon.Icon = new System.Drawing.Icon(appIco);
                     } else if (File.Exists(icoPng)) {
