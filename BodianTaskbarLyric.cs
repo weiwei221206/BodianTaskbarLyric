@@ -37,9 +37,9 @@ using System.Security.AccessControl;
 
 [assembly: AssemblyTitle("波点音乐专属任务栏歌词")]
 [assembly: AssemblyProduct("BodianTaskbarLyric")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
-[assembly: AssemblyInformationalVersion("1.0.3")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyInformationalVersion("1.1.0")]
 
 namespace BodianTaskbarLyric {
 
@@ -47,7 +47,7 @@ namespace BodianTaskbarLyric {
     // 1. 配置数据模型 (Config Model)
     // ==========================================
     public class AppConfig {
-        public const string APP_VERSION = "1.0.3";
+        public const string APP_VERSION = "1.1.0";
         public string Version = APP_VERSION;
 
         public string PositionMode = "left"; // "weather_right", "left" 或 "center"
@@ -1155,6 +1155,7 @@ namespace BodianTaskbarLyric {
         public string Album = "";
         public int Duration;
         public string PicUrl = "";
+        public string BackupPicUrl = ""; // 备用封面/歌手头像链接 (PNG/JPG)，用于系统无 WebP 解码器时的优雅降级
     }
 
     // ==========================================
@@ -1734,6 +1735,14 @@ namespace BodianTaskbarLyric {
                         if (mPic.Success) song.PicUrl = mPic.Groups[1].Value.Trim();
                     }
 
+                    Match mArtistPic = Regex.Match(payload, @"\bpic:\s*(https?://[^\s,\]\}]+\.(?:png|jpg|jpeg))");
+                    if (mArtistPic.Success) {
+                        song.BackupPicUrl = mArtistPic.Groups[1].Value.Trim();
+                    } else {
+                        Match mHead = Regex.Match(payload, @"\bartistPic:\s*([^,\s\}]+)");
+                        if (mHead.Success) song.BackupPicUrl = mHead.Groups[1].Value.Trim();
+                    }
+
                     Program.Log(string.Format("[LogMonitor] Song detected from log (full info): id={0}, name='{1}', artist='{2}'",
                         song.Id, song.Title, song.Artist));
                     SwitchToSong(song, null, false);
@@ -1844,7 +1853,6 @@ namespace BodianTaskbarLyric {
 
         public static ImageSource GetBodianClientIconImageSource() {
             try {
-                // 1. 优先从编译内嵌资源加载（完全零外部文件依赖，单 EXE 独立便携）
                 BitmapImage embedded = LoadEmbeddedBitmap("bodian_client.png");
                 if (embedded != null) return embedded;
 
@@ -1914,9 +1922,17 @@ namespace BodianTaskbarLyric {
             playWorker.Start();
         }
 
-        public ImageSource GetCoverImage(long songId, string url) {
+        public ImageSource GetCoverImage(SongInfo song) {
             if (_currentCover != null) return _currentCover;
-            ImageSource img = LoadCoverImage(songId, url);
+            if (song == null) return DefaultCover;
+            ImageSource img = LoadCoverImage(song.Id, song.PicUrl, song.BackupPicUrl);
+            _currentCover = img != null ? img : DefaultCover;
+            return _currentCover;
+        }
+
+        public ImageSource GetCoverImage(long songId, string url, string backupUrl = null) {
+            if (_currentCover != null) return _currentCover;
+            ImageSource img = LoadCoverImage(songId, url, backupUrl);
             _currentCover = img != null ? img : DefaultCover;
             return _currentCover;
         }
@@ -1945,8 +1961,6 @@ namespace BodianTaskbarLyric {
                     if (_memReader.IsAvailable && _memReader.CurrentPts >= 0) {
                         double memPts = _memReader.CurrentPts;
 
-                        // 核心防跳机制：切歌瞬时底层 MPV 仍需 200~350ms 释放并重置旧音频
-                        // 在 MPV 进度尚未归零前（仍残留上一首歌的 134s、75s 等秒数），坚决屏蔽该旧进度，杜绝切歌时歌词跳跃
                         if (_waitingForTrackReset) {
                             if (memPts <= 1.5) {
                                 _waitingForTrackReset = false;
@@ -2069,6 +2083,17 @@ namespace BodianTaskbarLyric {
                     if (dict.ContainsKey("duration") && dict["duration"] != null) song.Duration = Convert.ToInt32(dict["duration"]);
                     if (dict.ContainsKey("albumPic120") && dict["albumPic120"] != null) song.PicUrl = dict["albumPic120"].ToString();
                     else if (dict.ContainsKey("albumPic") && dict["albumPic"] != null) song.PicUrl = dict["albumPic"].ToString();
+
+                    if (dict.ContainsKey("artists") && dict["artists"] is System.Collections.ArrayList) {
+                        var arr = (System.Collections.ArrayList)dict["artists"];
+                        if (arr.Count > 0 && arr[0] is Dictionary<string, object>) {
+                            var a0 = (Dictionary<string, object>)arr[0];
+                            if (a0.ContainsKey("pic") && a0["pic"] != null) song.BackupPicUrl = a0["pic"].ToString();
+                        }
+                    }
+                    if (string.IsNullOrEmpty(song.BackupPicUrl) && dict.ContainsKey("artistPic") && dict["artistPic"] != null) {
+                        song.BackupPicUrl = dict["artistPic"].ToString();
+                    }
                 }
 
                 SwitchToSong(song, timeStr, isFirstRun);
@@ -2081,10 +2106,10 @@ namespace BodianTaskbarLyric {
             if (song == null) return;
             try {
                 if (!isFirstRun && CurrentSong != null && CurrentSong.Id == song.Id) {
-                    if (!string.IsNullOrEmpty(song.PicUrl) && (_currentCover == null || _currentCover == DefaultCover)) {
+                    if ((!string.IsNullOrEmpty(song.PicUrl) || !string.IsNullOrEmpty(song.BackupPicUrl)) && (_currentCover == null || _currentCover == DefaultCover)) {
                         ThreadPool.QueueUserWorkItem(state => {
                             try {
-                                ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl);
+                                ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl, song.BackupPicUrl);
                                 if (loaded != null && CurrentSong != null && CurrentSong.Id == song.Id) {
                                     _currentCover = loaded;
                                     if (OnCoverChanged != null) OnCoverChanged(_currentCover);
@@ -2133,12 +2158,14 @@ namespace BodianTaskbarLyric {
 
                 ThreadPool.QueueUserWorkItem(state => {
                     try {
-                        ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl);
+                        ImageSource loaded = LoadCoverImage(song.Id, song.PicUrl, song.BackupPicUrl);
                         _currentCover = loaded != null ? loaded : DefaultCover;
                         if (CurrentSong != null && CurrentSong.Id == song.Id) {
                             if (OnCoverChanged != null) OnCoverChanged(_currentCover);
                         }
-                    } catch { }
+                    } catch (Exception ex) {
+                        Program.Log("[Engine] SwitchToSong Cover Worker EX: " + ex.Message);
+                    }
                 });
 
                 ThreadPool.QueueUserWorkItem(state => {
@@ -2258,27 +2285,137 @@ namespace BodianTaskbarLyric {
             }
         }
 
-        private ImageSource LoadCoverImage(long songId, string url) {
+        private bool DownloadCoverFile(string url, string targetPath) {
+            if (string.IsNullOrEmpty(url)) return false;
             try {
-                string cacheFile = Path.Combine(_cacheDir, string.Format("{0}.jpg", songId));
-                if (!File.Exists(cacheFile) && !string.IsNullOrEmpty(url)) {
-                    using (WebClient client = new WebClient()) {
-                        client.DownloadFile(url, cacheFile);
+                if (File.Exists(targetPath)) {
+                    FileInfo fi = new FileInfo(targetPath);
+                    if (fi.Length > 100) return true;
+                    try { File.Delete(targetPath); } catch { }
+                }
+
+                byte[] data = DownloadUrlBytes(url);
+                if (data == null || data.Length <= 100) {
+                    // 若 HTTPS 失败，且链接是 https://，尝试降级明文 http:// 回退
+                    if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) {
+                        string httpUrl = "http://" + url.Substring("https://".Length);
+                        Program.Log(string.Format("[Cover] Retrying download via HTTP fallback: {0}", httpUrl));
+                        data = DownloadUrlBytes(httpUrl);
                     }
+                }
+
+                if (data != null && data.Length > 100) {
+                    string dir = Path.GetDirectoryName(targetPath);
+                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    File.WriteAllBytes(targetPath, data);
+                    Program.Log(string.Format("[Cover] Downloaded {0} bytes to '{1}'", data.Length, Path.GetFileName(targetPath)));
+                    return true;
+                }
+            } catch (Exception ex) {
+                Program.Log(string.Format("[Cover] DownloadCoverFile EX for '{0}': {1}", url, ex.Message));
+            }
+            return false;
+        }
+
+        private byte[] DownloadUrlBytes(string url) {
+            try {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+                req.UserAgent = "okhttp/3.10.0";
+                req.Timeout = 5000;
+                req.ReadWriteTimeout = 5000;
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse()) {
+                    if (resp.StatusCode == HttpStatusCode.OK) {
+                        using (Stream s = resp.GetResponseStream())
+                        using (MemoryStream ms = new MemoryStream()) {
+                            byte[] buffer = new byte[8192];
+                            int read;
+                            while ((read = s.Read(buffer, 0, buffer.Length)) > 0) {
+                                ms.Write(buffer, 0, read);
+                            }
+                            return ms.ToArray();
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                Program.Log(string.Format("[Cover] DownloadUrlBytes error ({0}): {1}", url, ex.Message));
+            }
+            return null;
+        }
+
+        private ImageSource DecodeCoverBytes(byte[] bytes, string label) {
+            if (bytes == null || bytes.Length <= 100) return null;
+            try {
+                BitmapImage bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.StreamSource = new MemoryStream(bytes);
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.DecodePixelWidth = 96;
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            } catch (NotSupportedException ex) {
+                Program.Log(string.Format("[Cover] WebP codec not supported by Windows WIC ({0}). Please install 'Webp Image Extensions' from Microsoft Store: {1}", label, ex.Message));
+            } catch (Exception ex) {
+                Program.Log(string.Format("[Cover] Decode error ({0}): {1}", label, ex.Message));
+            }
+            return null;
+        }
+
+        private ImageSource LoadCoverImage(long songId, string url, string backupUrl = null) {
+            try {
+                // 1. 优先加载主封面 (通常是 WebP 专辑图)
+                string cacheFile = Path.Combine(_cacheDir, string.Format("{0}.jpg", songId));
+
+                // 校验已存在的缓存文件，如果是小于等于100字节的死锁空文件，彻底删除
+                if (File.Exists(cacheFile)) {
+                    FileInfo fi = new FileInfo(cacheFile);
+                    if (fi.Length <= 100) {
+                        try { File.Delete(cacheFile); } catch { }
+                    }
+                }
+
+                if (!File.Exists(cacheFile) && !string.IsNullOrEmpty(url)) {
+                    DownloadCoverFile(url, cacheFile);
                 }
 
                 if (File.Exists(cacheFile)) {
                     byte[] bytes = File.ReadAllBytes(cacheFile);
-                    BitmapImage bmp = new BitmapImage();
-                    bmp.BeginInit();
-                    bmp.StreamSource = new MemoryStream(bytes);
-                    bmp.CacheOption = BitmapCacheOption.OnLoad;
-                    bmp.DecodePixelWidth = 96;
-                    bmp.EndInit();
-                    bmp.Freeze();
-                    return bmp;
+                    ImageSource img = DecodeCoverBytes(bytes, "Primary:" + songId);
+                    if (img != null) {
+                        Program.Log(string.Format("[Cover] Primary cover loaded successfully for song {0}.", songId));
+                        return img;
+                    }
                 }
-            } catch { }
+
+                // 2. 若主封面解码失败 (常见于其他设备系统未安装 WebP WIC 解码器) 或下载失败，尝试加载备选封面 (歌手 PNG 头像)
+                if (!string.IsNullOrEmpty(backupUrl)) {
+                    string backupExt = backupUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? ".png" : ".jpg";
+                    string backupFile = Path.Combine(_cacheDir, string.Format("{0}_backup{1}", songId, backupExt));
+
+                    if (File.Exists(backupFile)) {
+                        FileInfo fi = new FileInfo(backupFile);
+                        if (fi.Length <= 100) {
+                            try { File.Delete(backupFile); } catch { }
+                        }
+                    }
+
+                    if (!File.Exists(backupFile)) {
+                        Program.Log(string.Format("[Cover] Primary cover unavailable/unsupported; attempting backup url for song {0}: {1}", songId, backupUrl));
+                        DownloadCoverFile(backupUrl, backupFile);
+                    }
+
+                    if (File.Exists(backupFile)) {
+                        byte[] bBytes = File.ReadAllBytes(backupFile);
+                        ImageSource bImg = DecodeCoverBytes(bBytes, "Backup:" + songId);
+                        if (bImg != null) {
+                            Program.Log(string.Format("[Cover] Backup cover loaded successfully for song {0}.", songId));
+                            return bImg;
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                Program.Log(string.Format("[Cover] LoadCoverImage EX for song {0}: {1}", songId, ex.ToString()));
+            }
             return null;
         }
 
@@ -2289,14 +2426,11 @@ namespace BodianTaskbarLyric {
             string t = text.Trim();
             if (t.Length == 0) return true;
 
-            // 1. 如果匹配当前歌名（完全匹配、去除括号后缀如 (Live) 的歌名、或者带有连字符的 "歌名 - 歌手"）
             if (!string.IsNullOrEmpty(songTitle)) {
                 string cleanTitle = songTitle.Trim();
                 if (string.Equals(t, cleanTitle, StringComparison.OrdinalIgnoreCase)) {
                     return true;
                 }
-
-                // 去除括号后缀（如 " (Live)", " [伴奏]"）提取纯标题名
                 string baseTitle = Regex.Replace(cleanTitle, @"\s*[\(\[（【].*?[\)\]）】]", "").Trim();
                 if (!string.IsNullOrEmpty(baseTitle) && string.Equals(t, baseTitle, StringComparison.OrdinalIgnoreCase)) {
                     return true;
@@ -2311,8 +2445,6 @@ namespace BodianTaskbarLyric {
                     }
                 }
             }
-
-            // 2. 0~2.5 秒内带有连字符或歌名标识的分隔行（如 "Title - Artist", "歌名：xxx"）
             if (sec <= 2.5) {
                 if (t.Contains(" - ") || t.Contains(" — ") ||
                     t.StartsWith("歌名") || t.StartsWith("歌曲") || t.StartsWith("曲名") ||
@@ -2368,7 +2500,6 @@ namespace BodianTaskbarLyric {
                         string content = m.Groups[4].Value;
 
                         if (content.Contains("<0,0>")) {
-                            // 酷狗LRCX格式中，<0,0>为上一句主歌词的翻译文本（标记在上一句演唱完毕/下一句起始时间点）
                             string text = Regex.Replace(content, @"<[^>]+>", "").Trim();
                             if (!string.IsNullOrEmpty(text) && lastOriginalLine != null) {
                                 lastOriginalLine.Translation = text;
@@ -2701,7 +2832,7 @@ namespace BodianTaskbarLyric {
             Grid.SetColumn(textPanel, 1);
             topRow.Children.Add(textPanel);
 
-            // 右上角：程序控制中心入口（使用任务栏歌词原生官方图标）
+            // 右上角
             Image appIconImg = new Image {
                 Width = 18,
                 Height = 18,
@@ -2724,7 +2855,7 @@ namespace BodianTaskbarLyric {
             Grid.SetRow(topRow, 0);
             mainGrid.Children.Add(topRow);
 
-            // 第二行：拓宽的媒体控制按钮区 (左侧打开波点客户端 + 中间播放控制 + 右侧音量)
+            // 第二行
             Grid btnGrid = new Grid {
                 Margin = new Thickness(0, 9, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
@@ -2733,7 +2864,7 @@ namespace BodianTaskbarLyric {
             btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            // 左侧：打开波点音乐官方客户端（使用波点音乐高清原生官方 Logo）
+            // 左侧
             Image bodianClientImg = new Image {
                 Width = 20,
                 Height = 20,
@@ -2750,7 +2881,7 @@ namespace BodianTaskbarLyric {
             Grid.SetColumn(_btnOpenApp, 0);
             btnGrid.Children.Add(_btnOpenApp);
 
-            // 中间：上一首、播放/暂停、下一首
+            // 中间
             StackPanel centerPlaybackPanel = new StackPanel {
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Center
@@ -2833,7 +2964,7 @@ namespace BodianTaskbarLyric {
             Grid.SetRow(btnGrid, 1);
             mainGrid.Children.Add(btnGrid);
 
-            // 第三行：播放进度控制 (当前时间 + 进度条 + 总时长)
+            // 第三行
             Grid progressRow = new Grid {
                 Margin = new Thickness(0, 11, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
@@ -3007,7 +3138,7 @@ namespace BodianTaskbarLyric {
             _isDarkTheme = isDark;
 
             if (_isDarkTheme) {
-                // 深色主题：降低不透明度至约 68% (Alpha 175)，呈现现代通透毛玻璃质感
+                // 深色主题
                 _cardBorder.Background = new SolidColorBrush(Color.FromArgb(175, 24, 24, 26));
                 _cardBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(42, 255, 255, 255));
                 _primaryTextBrush = Brushes.White;
@@ -3017,7 +3148,7 @@ namespace BodianTaskbarLyric {
                 _coverEllipse.Stroke = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255));
                 _progressTrackBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
             } else {
-                // 浅色主题：降低不透明度至约 76% (Alpha 195)，玉润轻盈感
+                // 浅色主题
                 _cardBorder.Background = new SolidColorBrush(Color.FromArgb(195, 255, 255, 255));
                 _cardBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(28, 0, 0, 0));
                 _primaryTextBrush = new SolidColorBrush(Color.FromRgb(28, 28, 30));
@@ -3110,7 +3241,7 @@ namespace BodianTaskbarLyric {
 
             if (_engine != null) {
                 ImageSource img = (_engine.CurrentSong != null) 
-                    ? _engine.GetCoverImage(_engine.CurrentSong.Id, _engine.CurrentSong.PicUrl) 
+                    ? _engine.GetCoverImage(_engine.CurrentSong) 
                     : null;
                 UpdateSong(_engine.CurrentSong, img);
                 UpdatePlayState(_engine.IsPlaying);
@@ -3231,7 +3362,7 @@ namespace BodianTaskbarLyric {
                 _subText.Text = _engine.CurrentSong.Artist;
                 _subText.Visibility = Visibility.Visible;
                 _mainText.Margin = new Thickness(0, 0, 0, 0);
-                ImageSource initCover = _engine.GetCoverImage(_engine.CurrentSong.Id, _engine.CurrentSong.PicUrl);
+                ImageSource initCover = _engine.GetCoverImage(_engine.CurrentSong);
                 _coverBrush.ImageSource = initCover != null ? initCover : BodianEngine.DefaultCover;
             } else {
                 _coverBrush.ImageSource = BodianEngine.DefaultCover;
@@ -3499,7 +3630,7 @@ namespace BodianTaskbarLyric {
                 _coverEllipse.Visibility = Visibility.Visible;
                 _coverEllipse.Margin = new Thickness(0, 0, 8, 0);
                 ImageSource curCover = (_engine.CurrentSong != null) 
-                    ? _engine.GetCoverImage(_engine.CurrentSong.Id, _engine.CurrentSong.PicUrl) 
+                    ? _engine.GetCoverImage(_engine.CurrentSong) 
                     : BodianEngine.DefaultCover;
                 _coverBrush.ImageSource = curCover != null ? curCover : BodianEngine.DefaultCover;
             } else {
@@ -3743,9 +3874,29 @@ namespace BodianTaskbarLyric {
 
         public bool UpdateVisibility(IntPtr hTaskbar, Win32.RECT rc, double dpiScaleY) {
             try {
+                int screenW = Win32.GetSystemMetrics(0);
                 int screenH = Win32.GetSystemMetrics(1);
                 int hideThreshold = Math.Max(4, (int)(8 * dpiScaleY));
-                bool taskbarHidden = _config.AutoHideWithTaskbar && (rc.Top >= screenH - hideThreshold || rc.Bottom > screenH + hideThreshold);
+
+                int monLeft = 0, monTop = 0, monRight = screenW, monBottom = screenH;
+                IntPtr hMon = Win32.MonitorFromWindow(hTaskbar, Win32.MONITOR_DEFAULTTOPRIMARY);
+                if (hMon != IntPtr.Zero) {
+                    Win32.MONITORINFO mi = new Win32.MONITORINFO();
+                    mi.cbSize = Marshal.SizeOf(typeof(Win32.MONITORINFO));
+                    if (Win32.GetMonitorInfo(hMon, ref mi)) {
+                        monLeft = mi.rcMonitor.Left;
+                        monTop = mi.rcMonitor.Top;
+                        monRight = mi.rcMonitor.Right;
+                        monBottom = mi.rcMonitor.Bottom;
+                    }
+                }
+
+                bool isHorizontal = rc.Width >= rc.Height;
+                int visibleThickness = isHorizontal
+                    ? (Math.Min(rc.Bottom, monBottom) - Math.Max(rc.Top, monTop))
+                    : (Math.Min(rc.Right, monRight) - Math.Max(rc.Left, monLeft));
+
+                bool taskbarHidden = _config.AutoHideWithTaskbar && (visibleThickness <= hideThreshold);
                 if (taskbarHidden) {
                     if (Visibility != Visibility.Hidden) Visibility = Visibility.Hidden;
                     return false;
@@ -4061,7 +4212,7 @@ namespace BodianTaskbarLyric {
             if (_engine.CurrentSong != null) {
                 _songTitleText.Text = _engine.CurrentSong.Title;
                 _songArtistText.Text = string.Format("{0}  ·  {1}", _engine.CurrentSong.Artist, _engine.CurrentSong.Album);
-                ImageSource initCover = _engine.GetCoverImage(_engine.CurrentSong.Id, _engine.CurrentSong.PicUrl);
+                ImageSource initCover = _engine.GetCoverImage(_engine.CurrentSong);
                 _songCoverBrush.ImageSource = initCover != null ? initCover : BodianEngine.DefaultCover;
             } else {
                 _songCoverBrush.ImageSource = BodianEngine.DefaultCover;
@@ -4090,10 +4241,15 @@ namespace BodianTaskbarLyric {
 
         private void InitSettingsWindow() {
             Title = "波点音乐 - 任务栏歌词控制中心";
-            Width = 800;
-            Height = 670;
-            MinWidth = 720;
-            MinHeight = 600;
+
+            double workW = SystemParameters.WorkArea.Width;
+            double workH = SystemParameters.WorkArea.Height;
+            Width = Math.Min(800, Math.Max(600, workW - 40));
+            Height = Math.Min(670, Math.Max(480, workH - 40));
+            MinWidth = Math.Min(720, Math.Max(500, workW - 60));
+            MinHeight = Math.Min(600, Math.Max(450, workH - 60));
+            MaxHeight = Math.Max(480, workH - 20);
+
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -5846,6 +6002,15 @@ namespace BodianTaskbarLyric {
                 };
 
                 Log("Program starting v" + AppConfig.APP_VERSION + "...");
+
+                try {
+                    // 全局开启 TLS 1.2 与 TLS 1.1 支持 (3072 = Tls12, 768 = Tls11)
+                    ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)768 | SecurityProtocolType.Tls | SecurityProtocolType.Ssl3;
+                    ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, sslErrors) => true;
+                    Log("[Init] SecurityProtocol initialized with TLS 1.2/1.1.");
+                } catch (Exception secEx) {
+                    Log("[Init] SecurityProtocol init EX: " + secEx.Message);
+                }
 
                 // 核心多开唤醒机制：若程序已在后台运行，直接通过全局命名事件唤醒设置窗口，无需经过UAC提示，零延迟秒开
                 try {
