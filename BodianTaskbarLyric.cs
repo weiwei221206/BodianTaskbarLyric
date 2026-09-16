@@ -320,6 +320,94 @@ namespace BodianTaskbarLyric {
         public static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
+        public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int dwSize, out IntPtr lpNumberOfBytesRead);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool WriteProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int nSize, out IntPtr lpNumberOfBytesWritten);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr CreateRemoteThread(IntPtr hProcess, IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool VirtualFreeEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint dwFreeType);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
+        public static extern IntPtr LoadLibrary(string lpFileName);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
+        public static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteObject(IntPtr hObject);
+
+        public const uint PROCESS_VM_READ = 0x0010;
+        public const uint PROCESS_VM_WRITE = 0x0020;
+        public const uint PROCESS_VM_OPERATION = 0x0008;
+        public const uint PROCESS_QUERY_INFORMATION = 0x0400;
+        public const uint PROCESS_CREATE_THREAD = 0x0002;
+        public const uint PROCESS_ALL_ACCESS = 0x001F0FFF;
+        public const uint STILL_ACTIVE = 259;
+        public const uint MEM_COMMIT = 0x1000;
+        public const uint MEM_RESERVE = 0x2000;
+        public const uint MEM_RELEASE = 0x8000;
+        public const uint PAGE_EXECUTE_READWRITE = 0x40;
+
+        public const byte VK_MEDIA_NEXT_TRACK = 0xB0;
+        public const byte VK_MEDIA_PREV_TRACK = 0xB1;
+        public const byte VK_MEDIA_STOP = 0xB2;
+        public const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
+        public const byte VK_VOLUME_MUTE = 0xAD;
+        public const byte VK_VOLUME_DOWN = 0xAE;
+        public const byte VK_VOLUME_UP = 0xAF;
+        public const uint KEYEVENTF_KEYUP = 0x0002;
+        public const uint WM_APPCOMMAND = 0x0319;
+        public const int APPCOMMAND_MEDIA_NEXTTRACK = 11;
+        public const int APPCOMMAND_MEDIA_PREVIOUSTRACK = 12;
+        public const int APPCOMMAND_MEDIA_PLAY_PAUSE = 14;
+        public const int SW_RESTORE = 9;
+
+        public const int WM_MOUSEACTIVATE = 0x0021;
+        public const int MA_ACTIVATE = 1;
+        public const int MA_ACTIVATEANDEAT = 2;
+        public const int MA_NOACTIVATE = 3;
+        public const int MA_NOACTIVATEANDEAT = 4;
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll")]
@@ -1073,25 +1161,12 @@ namespace BodianTaskbarLyric {
     // 5.5 MPV 播放器内存直读同步器 (MpvMemoryReader)
     // ==========================================
     public class MpvMemoryReader {
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int dwSize, out IntPtr lpNumberOfBytesRead);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool CloseHandle(IntPtr hObject);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
-
-        private const uint PROCESS_VM_READ = 0x0010;
-        private const uint PROCESS_QUERY_INFORMATION = 0x0400;
-        private const uint STILL_ACTIVE = 259;
-
         private int _targetPid = 0;
         private IntPtr _hProcess = IntPtr.Zero;
         private IntPtr _eventLoopBase = IntPtr.Zero;
+        private IntPtr _libmpvBase = IntPtr.Zero;
+        private long _mpvHandle = 0;
+        private long _mpvCommandStringOffset = 0;
         private long _mpctxAddr = 0;
         private long _lastAttemptTicks = 0;
         private int _readFailureCount = 0;
@@ -1100,7 +1175,9 @@ namespace BodianTaskbarLyric {
         public bool IsAvailable { get; private set; }
         public bool IsAccessDenied { get; private set; }
         public bool IsVerifiedPlaybackField { get; private set; }
-        public double CurrentPts { get; private set; }
+        public double CurrentPts { get; set; }
+        public int TargetPid { get { return _targetPid; } }
+        public long MpvHandle { get { return _mpvHandle; } }
 
         public MpvMemoryReader() {
             CurrentPts = -1.0;
@@ -1108,11 +1185,13 @@ namespace BodianTaskbarLyric {
 
         public void Reset() {
             if (_hProcess != IntPtr.Zero) {
-                CloseHandle(_hProcess);
+                Win32.CloseHandle(_hProcess);
                 _hProcess = IntPtr.Zero;
             }
             _targetPid = 0;
             _eventLoopBase = IntPtr.Zero;
+            _libmpvBase = IntPtr.Zero;
+            _mpvHandle = 0;
             _mpctxAddr = 0;
             _readFailureCount = 0;
             IsAvailable = false;
@@ -1131,7 +1210,7 @@ namespace BodianTaskbarLyric {
             if (_hProcess == IntPtr.Zero || address == 0) return 0;
             byte[] buf = new byte[8];
             IntPtr bytesRead;
-            if (ReadProcessMemory(_hProcess, new IntPtr(address), buf, 8, out bytesRead) && bytesRead.ToInt32() == 8) {
+            if (Win32.ReadProcessMemory(_hProcess, new IntPtr(address), buf, 8, out bytesRead) && bytesRead.ToInt32() == 8) {
                 return BitConverter.ToInt64(buf, 0);
             }
             return 0;
@@ -1146,7 +1225,7 @@ namespace BodianTaskbarLyric {
                     // 读取覆盖 0x2E0 ~ 0x3E0，包含 0x328 (time-pos)、0x318 (fallback)、0x3D0 (audio time)、0x2F0 (playback_pts)
                     byte[] block = new byte[0x100];
                     IntPtr bytesRead;
-                    if (ReadProcessMemory(_hProcess, new IntPtr(_mpctxAddr + 0x2E0), block, block.Length, out bytesRead) && bytesRead.ToInt32() == block.Length) {
+                    if (Win32.ReadProcessMemory(_hProcess, new IntPtr(_mpctxAddr + 0x2E0), block, block.Length, out bytesRead) && bytesRead.ToInt32() == block.Length) {
                         double t328 = BitConverter.ToDouble(block, 0x328 - 0x2E0); // +0x48
                         double t318 = BitConverter.ToDouble(block, 0x318 - 0x2E0); // +0x38
                         double t3d0 = BitConverter.ToDouble(block, 0x3D0 - 0x2E0); // +0xF0
@@ -1199,7 +1278,7 @@ namespace BodianTaskbarLyric {
             try {
                 if (_hProcess != IntPtr.Zero) {
                     uint exitCode;
-                    if (GetExitCodeProcess(_hProcess, out exitCode) && exitCode != STILL_ACTIVE) {
+                    if (Win32.GetExitCodeProcess(_hProcess, out exitCode) && exitCode != Win32.STILL_ACTIVE) {
                         Reset();
                         return;
                     }
@@ -1219,11 +1298,14 @@ namespace BodianTaskbarLyric {
                     _targetPid = p.Id;
 
                     _eventLoopBase = IntPtr.Zero;
+                    _libmpvBase = IntPtr.Zero;
                     try {
                         foreach (ProcessModule m in p.Modules) {
                             if (m.ModuleName.IndexOf("media_kit_native_event_loop", StringComparison.OrdinalIgnoreCase) >= 0) {
                                 _eventLoopBase = m.BaseAddress;
-                                break;
+                            }
+                            if (m.ModuleName.IndexOf("libmpv-2", StringComparison.OrdinalIgnoreCase) >= 0) {
+                                _libmpvBase = m.BaseAddress;
                             }
                         }
                     } catch (System.ComponentModel.Win32Exception wEx) {
@@ -1235,7 +1317,30 @@ namespace BodianTaskbarLyric {
 
                     if (_eventLoopBase == IntPtr.Zero) return;
 
-                    _hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, _targetPid);
+                    // 解析 libmpv-2.dll 导出的 mpv_command_string 偏移
+                    if (_libmpvBase != IntPtr.Zero && _mpvCommandStringOffset == 0) {
+                        try {
+                            string mpvDllPath = Path.Combine(Path.GetDirectoryName(p.MainModule.FileName), "libmpv-2.dll");
+                            if (File.Exists(mpvDllPath)) {
+                                IntPtr localLib = Win32.LoadLibrary(mpvDllPath);
+                                if (localLib != IntPtr.Zero) {
+                                    IntPtr localFunc = Win32.GetProcAddress(localLib, "mpv_command_string");
+                                    if (localFunc != IntPtr.Zero) {
+                                        _mpvCommandStringOffset = localFunc.ToInt64() - localLib.ToInt64();
+                                        Program.Log(string.Format("[MemReader] Resolved mpv_command_string offset: +0x{0:X}", _mpvCommandStringOffset));
+                                    }
+                                }
+                            }
+                        } catch (Exception ex) {
+                            Program.Log("[MemReader] Failed to resolve mpv_command_string offset: " + ex.Message);
+                        }
+                    }
+
+                    uint desiredAccess = Win32.PROCESS_VM_READ | Win32.PROCESS_QUERY_INFORMATION | Win32.PROCESS_VM_WRITE | Win32.PROCESS_VM_OPERATION | Win32.PROCESS_CREATE_THREAD;
+                    _hProcess = Win32.OpenProcess(desiredAccess, false, _targetPid);
+                    if (_hProcess == IntPtr.Zero) {
+                        _hProcess = Win32.OpenProcess(Win32.PROCESS_VM_READ | Win32.PROCESS_QUERY_INFORMATION, false, _targetPid);
+                    }
                     if (_hProcess == IntPtr.Zero) {
                         int err = Marshal.GetLastWin32Error();
                         if (err == 5) IsAccessDenied = true;
@@ -1260,7 +1365,7 @@ namespace BodianTaskbarLyric {
                     if (IsLikelyUserPointer(mpvHandle)) {
                         byte[] nameBuf = new byte[8];
                         IntPtr bytesRead;
-                        if (ReadProcessMemory(_hProcess, new IntPtr(mpvHandle), nameBuf, 8, out bytesRead) && bytesRead.ToInt32() >= 4) {
+                        if (Win32.ReadProcessMemory(_hProcess, new IntPtr(mpvHandle), nameBuf, 8, out bytesRead) && bytesRead.ToInt32() >= 4) {
                             if (nameBuf[0] == 'm' && nameBuf[1] == 'a' && nameBuf[2] == 'i' && nameBuf[3] == 'n') {
                                 isValid = true;
                             }
@@ -1278,7 +1383,7 @@ namespace BodianTaskbarLyric {
                             if (IsLikelyUserPointer(mpvHandle)) {
                                 byte[] nameBuf = new byte[8];
                                 IntPtr bytesRead;
-                                if (ReadProcessMemory(_hProcess, new IntPtr(mpvHandle), nameBuf, 8, out bytesRead) && bytesRead.ToInt32() >= 4) {
+                                if (Win32.ReadProcessMemory(_hProcess, new IntPtr(mpvHandle), nameBuf, 8, out bytesRead) && bytesRead.ToInt32() >= 4) {
                                     if (nameBuf[0] == 'm' && nameBuf[1] == 'a' && nameBuf[2] == 'i' && nameBuf[3] == 'n') {
                                         isValid = true;
                                     }
@@ -1293,6 +1398,7 @@ namespace BodianTaskbarLyric {
                     long mpctx = ReadInt64(mpvHandle + 0x48);
                     if (!IsLikelyUserPointer(mpctx)) return;
 
+                    _mpvHandle = mpvHandle;
                     _mpctxAddr = mpctx;
                     IsVerifiedPlaybackField = true;
                     IsAvailable = true;
@@ -1308,7 +1414,7 @@ namespace BodianTaskbarLyric {
                 if (_hProcess == IntPtr.Zero || modBase == IntPtr.Zero) return 0xA1D8;
                 byte[] mem = new byte[0x10000];
                 IntPtr bytesRead;
-                if (ReadProcessMemory(_hProcess, modBase, mem, mem.Length, out bytesRead)) {
+                if (Win32.ReadProcessMemory(_hProcess, modBase, mem, mem.Length, out bytesRead)) {
                     int len = bytesRead.ToInt32();
                     for (int i = 0; i < len - 13; i++) {
                         if (mem[i] == 0x48 && mem[i + 1] == 0x8D && mem[i + 2] == 0x05 &&
@@ -1326,6 +1432,97 @@ namespace BodianTaskbarLyric {
                 Program.Log("[MemReader] ResolveMyHeadRvaDynamically EX: " + ex.Message);
             }
             return 0xA1D8;
+        }
+
+        public bool Seek(double targetSeconds) {
+            try {
+                if (targetSeconds < 0) targetSeconds = 0;
+                if (_targetPid == 0 || _mpvHandle == 0 || _libmpvBase == IntPtr.Zero || _mpvCommandStringOffset == 0) {
+                    Program.Log(string.Format("[MemReader] Seek failed: state invalid (pid={0}, handle=0x{1:X}, libmpv=0x{2:X}, funcOff=0x{3:X})",
+                        _targetPid, _mpvHandle, _libmpvBase.ToInt64(), _mpvCommandStringOffset));
+                    return false;
+                }
+
+                long remoteFunc = _libmpvBase.ToInt64() + _mpvCommandStringOffset;
+                string cmd = string.Format(System.Globalization.CultureInfo.InvariantCulture, "seek {0:F2} absolute", targetSeconds);
+                byte[] cmdBytes = Encoding.UTF8.GetBytes(cmd + "\0");
+
+                int shellcodeLen = 41;
+                int totalLen = shellcodeLen + cmdBytes.Length;
+
+                IntPtr hProc = Win32.OpenProcess(Win32.PROCESS_VM_OPERATION | Win32.PROCESS_VM_WRITE | Win32.PROCESS_VM_READ | Win32.PROCESS_CREATE_THREAD | Win32.PROCESS_QUERY_INFORMATION, false, _targetPid);
+                if (hProc == IntPtr.Zero) {
+                    hProc = _hProcess;
+                }
+                if (hProc == IntPtr.Zero) {
+                    Program.Log("[MemReader] Seek failed: unable to open process");
+                    return false;
+                }
+
+                bool closeOnExit = (hProc != _hProcess);
+
+                try {
+                    IntPtr remoteMem = Win32.VirtualAllocEx(hProc, IntPtr.Zero, (uint)totalLen, Win32.MEM_COMMIT | Win32.MEM_RESERVE, Win32.PAGE_EXECUTE_READWRITE);
+                    if (remoteMem == IntPtr.Zero) {
+                        Program.Log("[MemReader] Seek failed: VirtualAllocEx failed");
+                        return false;
+                    }
+
+                    try {
+                        long cmdAddr = remoteMem.ToInt64() + shellcodeLen;
+
+                        byte[] code = new byte[totalLen];
+                        // sub rsp, 0x28
+                        code[0] = 0x48; code[1] = 0x83; code[2] = 0xEC; code[3] = 0x28;
+                        // mov rcx, mpvHandle
+                        code[4] = 0x48; code[5] = 0xB9;
+                        Array.Copy(BitConverter.GetBytes(_mpvHandle), 0, code, 6, 8);
+                        // mov rdx, cmdAddr
+                        code[14] = 0x48; code[15] = 0xBA;
+                        Array.Copy(BitConverter.GetBytes(cmdAddr), 0, code, 16, 8);
+                        // mov rax, remoteFunc
+                        code[24] = 0x48; code[25] = 0xB8;
+                        Array.Copy(BitConverter.GetBytes(remoteFunc), 0, code, 26, 8);
+                        // call rax
+                        code[34] = 0xFF; code[35] = 0xD0;
+                        // add rsp, 0x28
+                        code[36] = 0x48; code[37] = 0x83; code[38] = 0xC4; code[39] = 0x28;
+                        // ret
+                        code[40] = 0xC3;
+
+                        Array.Copy(cmdBytes, 0, code, shellcodeLen, cmdBytes.Length);
+
+                        IntPtr written;
+                        if (!Win32.WriteProcessMemory(hProc, remoteMem, code, code.Length, out written)) {
+                            Program.Log("[MemReader] Seek failed: WriteProcessMemory failed");
+                            return false;
+                        }
+
+                        uint thId;
+                        IntPtr hThread = Win32.CreateRemoteThread(hProc, IntPtr.Zero, 0, remoteMem, IntPtr.Zero, 0, out thId);
+                        if (hThread == IntPtr.Zero) {
+                            Program.Log("[MemReader] Seek failed: CreateRemoteThread failed");
+                            return false;
+                        }
+
+                        Win32.WaitForSingleObject(hThread, 500);
+                        Win32.CloseHandle(hThread);
+
+                        CurrentPts = targetSeconds;
+                        Program.Log(string.Format("[MemReader] Seek({0:F2}s) command dispatched successfully via mpv_command_string", targetSeconds));
+                        return true;
+                    } finally {
+                        Win32.VirtualFreeEx(hProc, remoteMem, 0, Win32.MEM_RELEASE);
+                    }
+                } finally {
+                    if (closeOnExit && hProc != IntPtr.Zero) {
+                        Win32.CloseHandle(hProc);
+                    }
+                }
+            } catch (Exception ex) {
+                Program.Log("[MemReader] Seek EX: " + ex.Message);
+                return false;
+            }
         }
 
         private static bool IsLikelyUserPointer(long value) {
@@ -1389,6 +1586,25 @@ namespace BodianTaskbarLyric {
                     return Math.Max(0, _playTimeOffset + (IsPlaying ? _playStopwatch.Elapsed.TotalSeconds : 0));
                 }
             }
+        }
+
+        public bool Seek(double seconds) {
+            if (seconds < 0) seconds = 0;
+            if (CurrentSong != null && seconds > CurrentSong.Duration) seconds = CurrentSong.Duration;
+
+            lock (_timeLock) {
+                _playTimeOffset = seconds;
+                _playStopwatch.Restart();
+                _lastMemPts = seconds;
+                _lastMemPtsChangeMs = Environment.TickCount;
+            }
+
+            bool success = false;
+            if (_memReader != null) {
+                success = _memReader.Seek(seconds);
+            }
+            UpdatePlaybackTime();
+            return success;
         }
 
         public bool IsBodianRunning {
@@ -1552,6 +1768,134 @@ namespace BodianTaskbarLyric {
             rtb.Render(dv);
             rtb.Freeze();
             return rtb;
+        }
+
+        public static BitmapImage LoadEmbeddedBitmap(string resName) {
+            try {
+                Assembly asm = Assembly.GetExecutingAssembly();
+                using (Stream stream = asm.GetManifestResourceStream(resName)) {
+                    if (stream != null) {
+                        BitmapImage bi = new BitmapImage();
+                        bi.BeginInit();
+                        bi.CacheOption = BitmapCacheOption.OnLoad;
+                        bi.StreamSource = stream;
+                        bi.EndInit();
+                        bi.Freeze();
+                        return bi;
+                    }
+                }
+            } catch { }
+            return null;
+        }
+
+        public static ImageSource GetAppIconImageSource() {
+            try {
+                // 1. 优先从编译内嵌资源加载（完全零外部文件依赖，单 EXE 独立便携）
+                BitmapImage embedded = LoadEmbeddedBitmap("ico.png");
+                if (embedded != null) return embedded;
+
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string icoPng = Path.Combine(baseDir, "assets", "ico.png");
+                if (!File.Exists(icoPng)) icoPng = Path.Combine(baseDir, "ico.png");
+                if (File.Exists(icoPng)) {
+                    BitmapImage bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.UriSource = new Uri(icoPng, UriKind.Absolute);
+                    bi.EndInit();
+                    bi.Freeze();
+                    return bi;
+                }
+
+                string appIco = Path.Combine(baseDir, "assets", "app.ico");
+                if (!File.Exists(appIco)) appIco = Path.Combine(baseDir, "app.ico");
+                if (File.Exists(appIco)) {
+                    using (var icon = new System.Drawing.Icon(appIco, 32, 32)) {
+                        using (var bmp = icon.ToBitmap()) {
+                            var hBmp = bmp.GetHbitmap();
+                            try {
+                                var wpfBmp = Imaging.CreateBitmapSourceFromHBitmap(hBmp, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                                wpfBmp.Freeze();
+                                return wpfBmp;
+                            } finally {
+                                Win32.DeleteObject(hBmp);
+                            }
+                        }
+                    }
+                }
+
+                using (var icon = System.Drawing.Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName)) {
+                    if (icon != null) {
+                        using (var bmp = icon.ToBitmap()) {
+                            var hBmp = bmp.GetHbitmap();
+                            try {
+                                var wpfBmp = Imaging.CreateBitmapSourceFromHBitmap(hBmp, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                                wpfBmp.Freeze();
+                                return wpfBmp;
+                            } finally {
+                                Win32.DeleteObject(hBmp);
+                            }
+                        }
+                    }
+                }
+            } catch { }
+            return DefaultCover;
+        }
+
+        public static ImageSource GetBodianClientIconImageSource() {
+            try {
+                // 1. 优先从编译内嵌资源加载（完全零外部文件依赖，单 EXE 独立便携）
+                BitmapImage embedded = LoadEmbeddedBitmap("bodian_client.png");
+                if (embedded != null) return embedded;
+
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string clientPng = Path.Combine(baseDir, "assets", "bodian_client.png");
+                if (!File.Exists(clientPng)) clientPng = Path.Combine(baseDir, "bodian_client.png");
+                if (File.Exists(clientPng)) {
+                    BitmapImage bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.UriSource = new Uri(clientPng, UriKind.Absolute);
+                    bi.EndInit();
+                    bi.Freeze();
+                    return bi;
+                }
+
+                string trayPng = @"D:\Program Files\bodian\data\flutter_assets\assets\images\tray_logo.png";
+                if (File.Exists(trayPng)) {
+                    BitmapImage bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.UriSource = new Uri(trayPng, UriKind.Absolute);
+                    bi.EndInit();
+                    bi.Freeze();
+                    return bi;
+                }
+
+                Process[] procs = Process.GetProcessesByName("bodian_pc");
+                if (procs != null && procs.Length > 0) {
+                    try {
+                        string exePath = procs[0].MainModule.FileName;
+                        if (File.Exists(exePath)) {
+                            using (var icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath)) {
+                                if (icon != null) {
+                                    using (var bmp = icon.ToBitmap()) {
+                                        var hBmp = bmp.GetHbitmap();
+                                        try {
+                                            var wpfBmp = Imaging.CreateBitmapSourceFromHBitmap(hBmp, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                                            wpfBmp.Freeze();
+                                            return wpfBmp;
+                                        } finally {
+                                            Win32.DeleteObject(hBmp);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch { }
+                }
+            } catch { }
+            return GetAppIconImageSource();
         }
 
         // 同步初始化：启动前立即拉取一次数据库记录
@@ -2053,6 +2397,768 @@ namespace BodianTaskbarLyric {
     }
 
     // ==========================================
+    // 6. 媒体播放控制中心 (Player Controller)
+    // ==========================================
+    public static class PlayerController {
+        public static void PreviousTrack() {
+            SendMediaCommand(Win32.APPCOMMAND_MEDIA_PREVIOUSTRACK, Win32.VK_MEDIA_PREV_TRACK);
+        }
+
+        public static void PlayOrPause() {
+            SendMediaCommand(Win32.APPCOMMAND_MEDIA_PLAY_PAUSE, Win32.VK_MEDIA_PLAY_PAUSE);
+        }
+
+        public static void NextTrack() {
+            SendMediaCommand(Win32.APPCOMMAND_MEDIA_NEXTTRACK, Win32.VK_MEDIA_NEXT_TRACK);
+        }
+
+        public static void VolumeDown() {
+            try {
+                Win32.keybd_event(Win32.VK_VOLUME_DOWN, 0, 0, UIntPtr.Zero);
+                Win32.keybd_event(Win32.VK_VOLUME_DOWN, 0, Win32.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            } catch { }
+        }
+
+        public static void VolumeUp() {
+            try {
+                Win32.keybd_event(Win32.VK_VOLUME_UP, 0, 0, UIntPtr.Zero);
+                Win32.keybd_event(Win32.VK_VOLUME_UP, 0, Win32.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            } catch { }
+        }
+
+        public static void OpenBodianApp() {
+            try {
+                Process[] procs = Process.GetProcessesByName("bodian_pc");
+                if (procs.Length == 0) procs = Process.GetProcessesByName("bodian");
+
+                string exePath = "";
+                if (procs.Length > 0) {
+                    try {
+                        exePath = procs[0].MainModule.FileName;
+                    } catch { }
+
+                    var pids = new HashSet<uint>();
+                    foreach (var p in procs) {
+                        try { pids.Add((uint)p.Id); } catch { }
+                    }
+
+                    bool restored = false;
+                    Win32.EnumWindows((hWnd, lParam) => {
+                        uint pid;
+                        Win32.GetWindowThreadProcessId(hWnd, out pid);
+                        if (pids.Contains(pid)) {
+                            Win32.ShowWindow(hWnd, Win32.SW_RESTORE);
+                            Win32.SetForegroundWindow(hWnd);
+                            Win32.SwitchToThisWindow(hWnd, true);
+                            restored = true;
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+
+                    if (restored) return;
+                }
+
+                if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath)) {
+                    Process.Start(new ProcessStartInfo {
+                        FileName = exePath,
+                        UseShellExecute = true
+                    });
+                    return;
+                }
+
+                string[] candidates = new string[] {
+                    @"D:\Program Files\bodian\bodian_pc.exe",
+                    @"C:\Program Files\bodian\bodian_pc.exe",
+                    @"C:\Program Files (x86)\bodian\bodian_pc.exe",
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Programs\bodian\bodian_pc.exe")
+                };
+                foreach (var path in candidates) {
+                    if (File.Exists(path)) {
+                        Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+                        return;
+                    }
+                }
+            } catch { }
+        }
+
+        private static void SendMediaCommand(int appCommand, byte vkCode) {
+            try {
+                var targetPids = new HashSet<uint>();
+                Process[] procs = Process.GetProcesses();
+                foreach (var p in procs) {
+                    try {
+                        string name = p.ProcessName.ToLower();
+                        if (name.Contains("bodian")) {
+                            targetPids.Add((uint)p.Id);
+                        }
+                    } catch { }
+                }
+
+                if (targetPids.Count > 0) {
+                    var hwnds = new List<IntPtr>();
+                    Win32.EnumWindows((hWnd, lParam) => {
+                        uint pid;
+                        Win32.GetWindowThreadProcessId(hWnd, out pid);
+                        if (targetPids.Contains(pid)) {
+                            hwnds.Add(hWnd);
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+
+                    foreach (var h in hwnds) {
+                        IntPtr cmdLParam = (IntPtr)(appCommand << 16);
+                        Win32.PostMessage(h, Win32.WM_APPCOMMAND, h, cmdLParam);
+                    }
+                }
+            } catch { }
+
+            try {
+                Win32.keybd_event(vkCode, 0, 0, UIntPtr.Zero);
+                Win32.keybd_event(vkCode, 0, Win32.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            } catch { }
+        }
+    }
+
+    // ==========================================
+    // 6.5 迷你音乐控制卡片 (Lyric Control Popup)
+    // ==========================================
+    public class LyricControlPopup : Window {
+        private const double CARD_WIDTH = 350;
+        private const double CARD_HEIGHT = 150;
+        private const double PADDING = 16;
+
+        private AppConfig _config;
+        private BodianEngine _engine;
+        private Action _onOpenSettings;
+
+        private Border _cardBorder;
+        private Ellipse _coverEllipse;
+        private ImageBrush _coverBrush;
+        private TextBlock _titleText;
+        private TextBlock _artistText;
+
+        // 控制按钮
+        private Border _btnSettings;
+        private Border _btnOpenApp;
+        private Border _btnPrev;
+        private Border _btnPlayPause;
+        private Border _btnNext;
+        private Border _btnVolDown;
+        private Border _btnVolUp;
+
+        private System.Windows.Shapes.Path _iconPrev;
+        private System.Windows.Shapes.Path _iconPlayPause;
+        private System.Windows.Shapes.Path _iconNext;
+        private System.Windows.Shapes.Path _iconVolDown;
+        private System.Windows.Shapes.Path _iconVolUp;
+
+        // 播放进度
+        private TextBlock _textCurTime;
+        private TextBlock _textTotalTime;
+        private Grid _progressContainer;
+        private Border _progressTrack;
+        private Border _progressFill;
+        private Border _progressThumb;
+        private DispatcherTimer _progressTimer;
+        private bool _isDraggingProgress = false;
+
+        private bool _isDarkTheme = true;
+        private Brush _primaryTextBrush;
+        private Brush _secondaryTextBrush;
+        private Brush _iconBrush;
+        private Brush _btnHoverBrush;
+        private Brush _progressTrackBrush;
+        private Brush _progressFillBrush = new SolidColorBrush(Color.FromRgb(0, 210, 106));
+
+        private Geometry _geomPlay;
+        private Geometry _geomPause;
+        private Geometry _geomPrev;
+        private Geometry _geomNext;
+        private Geometry _geomVolDown;
+        private Geometry _geomVolUp;
+
+        public long LastHideTick { get; private set; }
+
+        public LyricControlPopup(AppConfig config, BodianEngine engine, Action onOpenSettings) {
+            _config = config;
+            _engine = engine;
+            _onOpenSettings = onOpenSettings;
+            LastHideTick = 0;
+
+            InitWindow();
+            InitGeometries();
+            BuildUI();
+            ApplyTheme();
+
+            Deactivated += (s, e) => {
+                LastHideTick = Environment.TickCount;
+                if (_progressTimer != null) _progressTimer.Stop();
+                Hide();
+            };
+
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => {
+                try {
+                    Dispatcher.Invoke(new Action(() => ApplyTheme()));
+                } catch { }
+            };
+
+            _progressTimer = new DispatcherTimer();
+            _progressTimer.Interval = TimeSpan.FromMilliseconds(150);
+            _progressTimer.Tick += (s, e) => {
+                if (!_isDraggingProgress && IsVisible) {
+                    UpdateProgressUI();
+                }
+            };
+        }
+
+        private void InitWindow() {
+            Title = "BodianMiniControl";
+            Width = CARD_WIDTH + PADDING * 2;
+            Height = CARD_HEIGHT + PADDING * 2;
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
+            Topmost = true;
+            ShowInTaskbar = false;
+            ResizeMode = ResizeMode.NoResize;
+            FontFamily = new FontFamily("Segoe UI Variable Text, PingFang SC, Microsoft YaHei UI");
+        }
+
+        private void InitGeometries() {
+            _geomPrev = Geometry.Parse("M 1.5,1.5 L 1.5,12.5 M 1.5,7 L 11,1.5 L 11,12.5 Z");
+            _geomNext = Geometry.Parse("M 1,1.5 L 10.5,7 L 1,12.5 Z M 10.5,1.5 L 10.5,12.5");
+            _geomPlay = Geometry.Parse("M 3.5,1.5 L 13,7.5 L 3.5,13.5 Z");
+            _geomPause = Geometry.Parse("M 3,1.5 L 5.5,1.5 L 5.5,13.5 L 3,13.5 Z M 8.5,1.5 L 11,1.5 L 11,13.5 L 8.5,13.5 Z");
+            _geomVolDown = Geometry.Parse("M 1,4.5 L 3.5,4.5 L 7,1.5 L 7,12.5 L 3.5,9.5 L 1,9.5 Z M 9.5,7 L 13,7");
+            _geomVolUp = Geometry.Parse("M 1,4.5 L 3.5,4.5 L 7,1.5 L 7,12.5 L 3.5,9.5 L 1,9.5 Z M 9.5,7 L 13.5,7 M 11.5,5 L 11.5,9");
+        }
+
+        private void BuildUI() {
+            Grid rootGrid = new Grid();
+
+            _cardBorder = new Border {
+                Width = CARD_WIDTH,
+                Height = CARD_HEIGHT,
+                Margin = new Thickness(PADDING),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(14, 12, 14, 12),
+                BorderThickness = new Thickness(1),
+                SnapsToDevicePixels = true,
+                Effect = new DropShadowEffect {
+                    BlurRadius = 14,
+                    ShadowDepth = 2,
+                    Direction = 270,
+                    Opacity = 0.20,
+                    Color = Colors.Black
+                }
+            };
+
+            Grid mainGrid = new Grid();
+            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 第一行：歌曲信息
+            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 第二行：控制按钮
+            mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 第三行：进度条
+
+            // 第一行：封面与歌曲信息 + 右上角程序控制中心入口
+            Grid topRow = new Grid();
+            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            _coverEllipse = new Ellipse {
+                Width = 40,
+                Height = 40,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 12, 0),
+                StrokeThickness = 1.0
+            };
+            _coverBrush = new ImageBrush {
+                Stretch = Stretch.UniformToFill,
+                ImageSource = BodianEngine.DefaultCover
+            };
+            RenderOptions.SetBitmapScalingMode(_coverBrush, BitmapScalingMode.HighQuality);
+            _coverEllipse.Fill = _coverBrush;
+            Grid.SetColumn(_coverEllipse, 0);
+            topRow.Children.Add(_coverEllipse);
+
+            StackPanel textPanel = new StackPanel {
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0)
+            };
+            _titleText = new TextBlock {
+                Text = "波点音乐",
+                FontSize = 13.5,
+                FontWeight = FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            _artistText = new TextBlock {
+                Text = "当前未在播放",
+                FontSize = 11.5,
+                Margin = new Thickness(0, 3, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            textPanel.Children.Add(_titleText);
+            textPanel.Children.Add(_artistText);
+            Grid.SetColumn(textPanel, 1);
+            topRow.Children.Add(textPanel);
+
+            // 右上角：程序控制中心入口（使用任务栏歌词原生官方图标）
+            Image appIconImg = new Image {
+                Width = 18,
+                Height = 18,
+                Stretch = Stretch.Uniform,
+                Source = BodianEngine.GetAppIconImageSource(),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            RenderOptions.SetBitmapScalingMode(appIconImg, BitmapScalingMode.HighQuality);
+
+            _btnSettings = CreateMediaButton(appIconImg, 26, () => {
+                Hide();
+                if (_onOpenSettings != null) _onOpenSettings();
+            }, "打开歌词设置中心");
+            _btnSettings.VerticalAlignment = VerticalAlignment.Top;
+            _btnSettings.Margin = new Thickness(0, -2, -2, 0);
+            Grid.SetColumn(_btnSettings, 2);
+            topRow.Children.Add(_btnSettings);
+
+            Grid.SetRow(topRow, 0);
+            mainGrid.Children.Add(topRow);
+
+            // 第二行：拓宽的媒体控制按钮区 (左侧打开波点客户端 + 中间播放控制 + 右侧音量)
+            Grid btnGrid = new Grid {
+                Margin = new Thickness(0, 9, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            // 左侧：打开波点音乐官方客户端（使用波点音乐高清原生官方 Logo）
+            Image bodianClientImg = new Image {
+                Width = 20,
+                Height = 20,
+                Stretch = Stretch.Uniform,
+                Source = BodianEngine.GetBodianClientIconImageSource(),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            RenderOptions.SetBitmapScalingMode(bodianClientImg, BitmapScalingMode.HighQuality);
+
+            _btnOpenApp = CreateMediaButton(bodianClientImg, 30, () => {
+                PlayerController.OpenBodianApp();
+            }, "打开波点音乐客户端");
+            Grid.SetColumn(_btnOpenApp, 0);
+            btnGrid.Children.Add(_btnOpenApp);
+
+            // 中间：上一首、播放/暂停、下一首
+            StackPanel centerPlaybackPanel = new StackPanel {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+
+            _iconPrev = new System.Windows.Shapes.Path {
+                Data = _geomPrev,
+                Stretch = Stretch.Uniform,
+                Width = 12,
+                Height = 12,
+                StrokeThickness = 1.2
+            };
+            _btnPrev = CreateMediaButton(_iconPrev, 32, () => {
+                PlayerController.PreviousTrack();
+            }, "上一首");
+
+            _iconPlayPause = new System.Windows.Shapes.Path {
+                Data = _engine != null && _engine.IsPlaying ? _geomPause : _geomPlay,
+                Stretch = Stretch.Uniform,
+                Width = 13,
+                Height = 13,
+                StrokeThickness = 1.2
+            };
+            _btnPlayPause = CreateMediaButton(_iconPlayPause, 36, () => {
+                PlayerController.PlayOrPause();
+                bool willPlay = _engine != null ? !_engine.IsPlaying : true;
+                _iconPlayPause.Data = willPlay ? _geomPause : _geomPlay;
+            }, "播放 / 暂停");
+
+            _iconNext = new System.Windows.Shapes.Path {
+                Data = _geomNext,
+                Stretch = Stretch.Uniform,
+                Width = 12,
+                Height = 12,
+                StrokeThickness = 1.2
+            };
+            _btnNext = CreateMediaButton(_iconNext, 32, () => {
+                PlayerController.NextTrack();
+            }, "下一首");
+
+            centerPlaybackPanel.Children.Add(_btnPrev);
+            centerPlaybackPanel.Children.Add(_btnPlayPause);
+            centerPlaybackPanel.Children.Add(_btnNext);
+            Grid.SetColumn(centerPlaybackPanel, 1);
+            btnGrid.Children.Add(centerPlaybackPanel);
+
+            // 右侧：音量减与音量加
+            StackPanel rightVolPanel = new StackPanel {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+
+            _iconVolDown = new System.Windows.Shapes.Path {
+                Data = _geomVolDown,
+                Stretch = Stretch.Uniform,
+                Width = 13,
+                Height = 13,
+                StrokeThickness = 1.2
+            };
+            _btnVolDown = CreateMediaButton(_iconVolDown, 28, () => {
+                PlayerController.VolumeDown();
+            }, "降低音量");
+
+            _iconVolUp = new System.Windows.Shapes.Path {
+                Data = _geomVolUp,
+                Stretch = Stretch.Uniform,
+                Width = 13,
+                Height = 13,
+                StrokeThickness = 1.2
+            };
+            _btnVolUp = CreateMediaButton(_iconVolUp, 28, () => {
+                PlayerController.VolumeUp();
+            }, "增加音量");
+
+            rightVolPanel.Children.Add(_btnVolDown);
+            rightVolPanel.Children.Add(_btnVolUp);
+            Grid.SetColumn(rightVolPanel, 2);
+            btnGrid.Children.Add(rightVolPanel);
+
+            Grid.SetRow(btnGrid, 1);
+            mainGrid.Children.Add(btnGrid);
+
+            // 第三行：播放进度控制 (当前时间 + 进度条 + 总时长)
+            Grid progressRow = new Grid {
+                Margin = new Thickness(0, 11, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            progressRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            progressRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            progressRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            _textCurTime = new TextBlock {
+                Text = "00:00",
+                FontSize = 10.5,
+                FontFamily = new FontFamily("Consolas, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            Grid.SetColumn(_textCurTime, 0);
+            progressRow.Children.Add(_textCurTime);
+
+            _progressContainer = new Grid {
+                Height = 16,
+                Cursor = Cursors.Hand,
+                Background = Brushes.Transparent,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            _progressTrack = new Border {
+                Height = 4,
+                CornerRadius = new CornerRadius(2),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            };
+            _progressContainer.Children.Add(_progressTrack);
+
+            _progressFill = new Border {
+                Height = 4,
+                CornerRadius = new CornerRadius(2),
+                Background = _progressFillBrush,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Width = 0
+            };
+            _progressContainer.Children.Add(_progressFill);
+
+            _progressThumb = new Border {
+                Width = 10,
+                Height = 10,
+                CornerRadius = new CornerRadius(5),
+                Background = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(-5, 0, 0, 0),
+                Effect = new DropShadowEffect {
+                    BlurRadius = 4,
+                    ShadowDepth = 1,
+                    Opacity = 0.3,
+                    Color = Colors.Black
+                }
+            };
+            _progressContainer.Children.Add(_progressThumb);
+
+            Action<System.Windows.Input.MouseEventArgs> handleProgressInput = (e) => {
+                double w = _progressContainer.ActualWidth;
+                if (w <= 0) return;
+                Point p = e.GetPosition(_progressContainer);
+                double pct = Math.Max(0.0, Math.Min(1.0, p.X / w));
+                double total = (_engine != null && _engine.CurrentSong != null) ? _engine.CurrentSong.Duration : 0;
+                double cur = total * pct;
+
+                _progressFill.Width = w * pct;
+                _progressThumb.Margin = new Thickness(Math.Max(0, w * pct - 5), 0, 0, 0);
+                _textCurTime.Text = FormatTime(cur);
+            };
+
+            _progressContainer.MouseLeftButtonDown += (s, e) => {
+                _isDraggingProgress = true;
+                _progressContainer.CaptureMouse();
+                handleProgressInput(e);
+                e.Handled = true;
+            };
+
+            _progressContainer.MouseMove += (s, e) => {
+                if (_isDraggingProgress) {
+                    handleProgressInput(e);
+                    e.Handled = true;
+                }
+            };
+
+            _progressContainer.MouseLeftButtonUp += (s, e) => {
+                if (_isDraggingProgress) {
+                    _isDraggingProgress = false;
+                    _progressContainer.ReleaseMouseCapture();
+                    handleProgressInput(e);
+
+                    double w = _progressContainer.ActualWidth;
+                    if (w > 0 && _engine != null && _engine.CurrentSong != null && _engine.CurrentSong.Duration > 0) {
+                        Point p = e.GetPosition(_progressContainer);
+                        double pct = Math.Max(0.0, Math.Min(1.0, p.X / w));
+                        double targetSeconds = _engine.CurrentSong.Duration * pct;
+                        _engine.Seek(targetSeconds);
+                    }
+
+                    e.Handled = true;
+                }
+            };
+
+            _progressContainer.LostMouseCapture += (s, e) => {
+                _isDraggingProgress = false;
+            };
+
+            Grid.SetColumn(_progressContainer, 1);
+            progressRow.Children.Add(_progressContainer);
+
+            _textTotalTime = new TextBlock {
+                Text = "00:00",
+                FontSize = 10.5,
+                FontFamily = new FontFamily("Consolas, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            Grid.SetColumn(_textTotalTime, 2);
+            progressRow.Children.Add(_textTotalTime);
+
+            Grid.SetRow(progressRow, 2);
+            mainGrid.Children.Add(progressRow);
+
+            _cardBorder.Child = mainGrid;
+            rootGrid.Children.Add(_cardBorder);
+            Content = rootGrid;
+        }
+
+        private Border CreateMediaButton(UIElement icon, double size, Action onClick, string tooltipText = null) {
+            Border btn = new Border {
+                Width = size,
+                Height = size,
+                CornerRadius = new CornerRadius(size / 2.0),
+                Background = Brushes.Transparent,
+                Margin = new Thickness(4, 0, 4, 0),
+                Cursor = Cursors.Hand,
+                Child = icon,
+                ToolTip = tooltipText
+            };
+
+            btn.MouseEnter += (s, e) => {
+                btn.Background = _btnHoverBrush;
+            };
+            btn.MouseLeave += (s, e) => {
+                btn.Background = Brushes.Transparent;
+            };
+            btn.MouseLeftButtonDown += (s, e) => {
+                btn.RenderTransform = new ScaleTransform(0.92, 0.92, size / 2.0, size / 2.0);
+            };
+            btn.MouseLeftButtonUp += (s, e) => {
+                btn.RenderTransform = null;
+                if (onClick != null) onClick();
+                e.Handled = true;
+            };
+
+            return btn;
+        }
+
+        public void ApplyTheme() {
+            bool isDark = false;
+            if (_config != null && string.Equals(_config.UITheme, "light", StringComparison.OrdinalIgnoreCase)) {
+                isDark = false;
+            } else if (_config != null && string.Equals(_config.UITheme, "dark", StringComparison.OrdinalIgnoreCase)) {
+                isDark = true;
+            } else {
+                isDark = Win32.IsSystemDarkTheme();
+            }
+
+            _isDarkTheme = isDark;
+
+            if (_isDarkTheme) {
+                // 深色主题：降低不透明度至约 68% (Alpha 175)，呈现现代通透毛玻璃质感
+                _cardBorder.Background = new SolidColorBrush(Color.FromArgb(175, 24, 24, 26));
+                _cardBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(42, 255, 255, 255));
+                _primaryTextBrush = Brushes.White;
+                _secondaryTextBrush = new SolidColorBrush(Color.FromArgb(175, 255, 255, 255));
+                _iconBrush = Brushes.White;
+                _btnHoverBrush = new SolidColorBrush(Color.FromArgb(32, 255, 255, 255));
+                _coverEllipse.Stroke = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255));
+                _progressTrackBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+            } else {
+                // 浅色主题：降低不透明度至约 76% (Alpha 195)，玉润轻盈感
+                _cardBorder.Background = new SolidColorBrush(Color.FromArgb(195, 255, 255, 255));
+                _cardBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(28, 0, 0, 0));
+                _primaryTextBrush = new SolidColorBrush(Color.FromRgb(28, 28, 30));
+                _secondaryTextBrush = new SolidColorBrush(Color.FromRgb(142, 142, 147));
+                _iconBrush = new SolidColorBrush(Color.FromRgb(28, 28, 30));
+                _btnHoverBrush = new SolidColorBrush(Color.FromArgb(20, 0, 0, 0));
+                _coverEllipse.Stroke = new SolidColorBrush(Color.FromArgb(28, 0, 0, 0));
+                _progressTrackBrush = new SolidColorBrush(Color.FromArgb(25, 0, 0, 0));
+            }
+
+            _titleText.Foreground = _primaryTextBrush;
+            _artistText.Foreground = _secondaryTextBrush;
+            _textCurTime.Foreground = _secondaryTextBrush;
+            _textTotalTime.Foreground = _secondaryTextBrush;
+            if (_progressTrack != null) _progressTrack.Background = _progressTrackBrush;
+
+            if (_iconPrev != null) { _iconPrev.Fill = _iconBrush; _iconPrev.Stroke = _iconBrush; }
+            if (_iconPlayPause != null) { _iconPlayPause.Fill = _iconBrush; _iconPlayPause.Stroke = _iconBrush; }
+            if (_iconNext != null) { _iconNext.Fill = _iconBrush; _iconNext.Stroke = _iconBrush; }
+            if (_iconVolDown != null) { _iconVolDown.Fill = _iconBrush; _iconVolDown.Stroke = _iconBrush; }
+            if (_iconVolUp != null) { _iconVolUp.Fill = _iconBrush; _iconVolUp.Stroke = _iconBrush; }
+        }
+
+        private static string FormatTime(double seconds) {
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 0) seconds = 0;
+            int totalSec = (int)Math.Round(seconds);
+            int m = totalSec / 60;
+            int s = totalSec % 60;
+            return string.Format("{0:D2}:{1:D2}", m, s);
+        }
+
+        private void UpdateProgressUI() {
+            if (_engine == null) return;
+            double curSec = _engine.CurrentPlaybackSeconds;
+            double totalSec = (_engine.CurrentSong != null) ? _engine.CurrentSong.Duration : 0;
+
+            _textCurTime.Text = FormatTime(curSec);
+            _textTotalTime.Text = FormatTime(totalSec);
+
+            double w = _progressContainer != null ? _progressContainer.ActualWidth : 0;
+            if (w > 0 && totalSec > 0) {
+                double pct = Math.Max(0.0, Math.Min(1.0, curSec / totalSec));
+                _progressFill.Width = w * pct;
+                _progressThumb.Margin = new Thickness(Math.Max(0, w * pct - 5), 0, 0, 0);
+            } else {
+                _progressFill.Width = 0;
+                _progressThumb.Margin = new Thickness(0, 0, 0, 0);
+            }
+        }
+
+        public void UpdateSong(SongInfo song, ImageSource cover) {
+            Dispatcher.Invoke(() => {
+                if (song != null) {
+                    _titleText.Text = !string.IsNullOrEmpty(song.Title) ? song.Title : "未知歌曲";
+                    _artistText.Text = !string.IsNullOrEmpty(song.Artist) ? song.Artist : "未知歌手";
+                    _titleText.ToolTip = _titleText.Text;
+                    _artistText.ToolTip = _artistText.Text;
+                } else {
+                    _titleText.Text = "波点音乐";
+                    _artistText.Text = "当前未在播放";
+                    _titleText.ToolTip = null;
+                    _artistText.ToolTip = null;
+                }
+                if (cover != null) {
+                    _coverBrush.ImageSource = cover;
+                } else {
+                    _coverBrush.ImageSource = BodianEngine.DefaultCover;
+                }
+                UpdateProgressUI();
+            });
+        }
+
+        public void UpdateCover(ImageSource cover) {
+            Dispatcher.Invoke(() => {
+                _coverBrush.ImageSource = cover != null ? cover : BodianEngine.DefaultCover;
+            });
+        }
+
+        public void UpdatePlayState(bool isPlaying) {
+            Dispatcher.Invoke(() => {
+                if (_iconPlayPause != null) {
+                    _iconPlayPause.Data = isPlaying ? _geomPause : _geomPlay;
+                }
+                UpdateProgressUI();
+            });
+        }
+
+        public void ShowNearOverlay(Window overlay) {
+            ApplyTheme();
+
+            if (_engine != null) {
+                ImageSource img = (_engine.CurrentSong != null) 
+                    ? _engine.GetCoverImage(_engine.CurrentSong.Id, _engine.CurrentSong.PicUrl) 
+                    : null;
+                UpdateSong(_engine.CurrentSong, img);
+                UpdatePlayState(_engine.IsPlaying);
+            }
+
+            UpdateProgressUI();
+            if (_progressTimer != null) _progressTimer.Start();
+
+            // 计算卡片在屏幕上的精确物理/逻辑坐标 (包含四周透明缓冲保护)
+            double cardCenterX = overlay.Left + (overlay.Width - CARD_WIDTH) / 2.0;
+            double winX = cardCenterX - PADDING;
+            double cardBottomY = overlay.Top - 8.0;
+            double winY = cardBottomY - CARD_HEIGHT - PADDING;
+
+            Rect workArea = SystemParameters.WorkArea;
+            try {
+                IntPtr hMon = Win32.MonitorFromWindow(new WindowInteropHelper(overlay).Handle, Win32.MONITOR_DEFAULTTOPRIMARY);
+                Win32.MONITORINFO mi = new Win32.MONITORINFO();
+                mi.cbSize = Marshal.SizeOf(typeof(Win32.MONITORINFO));
+                if (Win32.GetMonitorInfo(hMon, ref mi)) {
+                    double dpiX = 1.0, dpiY = 1.0;
+                    PresentationSource src = PresentationSource.FromVisual(overlay);
+                    if (src != null && src.CompositionTarget != null) {
+                        dpiX = src.CompositionTarget.TransformToDevice.M11;
+                        dpiY = src.CompositionTarget.TransformToDevice.M22;
+                    }
+                    workArea = new Rect(mi.rcWork.Left / dpiX, mi.rcWork.Top / dpiY, mi.rcWork.Width / dpiX, mi.rcWork.Height / dpiY);
+                }
+            } catch { }
+
+            // 水平边界贴边保护
+            if (winX + PADDING < workArea.Left + 8) winX = workArea.Left + 8 - PADDING;
+            if (winX + PADDING + CARD_WIDTH > workArea.Right - 8) winX = workArea.Right - 8 - CARD_WIDTH - PADDING;
+
+            // 垂直边界保护 (若顶部空间不足，则在下方弹出)
+            if (winY + PADDING < workArea.Top + 8) {
+                winY = overlay.Top + overlay.Height + 8.0 - PADDING;
+            }
+
+            Left = winX;
+            Top = winY;
+
+            Show();
+            Activate();
+        }
+    }
+
+    // ==========================================
     // 7. 任务栏歌词悬浮条 (Taskbar Overlay Window)
     // ==========================================
     public class TaskbarOverlayWindow : Window {
@@ -2086,6 +3192,7 @@ namespace BodianTaskbarLyric {
         private int _fsCheckTick = 0;
         private Action _onOpenSettings;
         private bool _isSettingsOpen = false;
+        private LyricControlPopup _controlPopup;
 
         // 缓存上一次坐标与尺寸，防止无意义重绘与点击闪烁
         private int _lastX = -9999;
@@ -2116,6 +3223,7 @@ namespace BodianTaskbarLyric {
             InitWindow();
             BuildUI();
             ApplyConfig(_config);
+            _controlPopup = new LyricControlPopup(_config, _engine, _onOpenSettings);
 
             // 初始化当前歌曲信息
             if (_engine.CurrentSong != null) {
@@ -2133,7 +3241,10 @@ namespace BodianTaskbarLyric {
             _engine.OnCoverChanged += Engine_OnCoverChanged;
             _engine.OnLyricChanged += Engine_OnLyricChanged;
             _engine.OnPlayStateChanged += playing => {
-                Dispatcher.Invoke(() => UpdateRotationState());
+                Dispatcher.Invoke(() => {
+                    UpdateRotationState();
+                    if (_controlPopup != null) _controlPopup.UpdatePlayState(playing);
+                });
             };
             _engine.OnProcessStateChanged += running => {
                 Dispatcher.Invoke(() => UpdateVisibility());
@@ -2168,9 +3279,11 @@ namespace BodianTaskbarLyric {
 
             SourceInitialized += (s, e) => {
                 _hwnd = new WindowInteropHelper(this).Handle;
+                HwndSource source = HwndSource.FromHwnd(_hwnd);
+                if (source != null) {
+                    source.AddHook(WndProc);
+                }
 
-                // 核心防闪烁机制：将悬浮窗所有权关联到任务栏 Shell_TrayWnd
-                // Windows 原生机制保证 Owned Window 永远排列在 Owner 之前，彻底杜绝切换/点击任务栏时的画面闪烁
                 IntPtr hTaskbar = Win32.FindWindow("Shell_TrayWnd", null);
                 if (hTaskbar != IntPtr.Zero) {
                     _lastTaskbarHwnd = hTaskbar;
@@ -2191,8 +3304,18 @@ namespace BodianTaskbarLyric {
                 }
             };
 
-            MouseLeftButtonDown += (s, e) => {
-                if (_onOpenSettings != null) _onOpenSettings();
+            PreviewMouseLeftButtonDown += (s, e) => {
+                if (_controlPopup != null) {
+                    if (_controlPopup.IsVisible) {
+                        _controlPopup.Hide();
+                    } else {
+                        if (Environment.TickCount - _controlPopup.LastHideTick < 80) {
+                            return;
+                        }
+                        _controlPopup.ShowNearOverlay(this);
+                    }
+                    e.Handled = true;
+                }
             };
 
             // 右键菜单
@@ -2231,12 +3354,22 @@ namespace BodianTaskbarLyric {
             ContextMenu = menu;
         }
 
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
+            // 彻底根除 WS_EX_NOACTIVATE 窗口点击被操作系统吃掉的 Bug (Windows 默认可能返回 MA_NOACTIVATEANDEAT 导致完全不派发 WM_LBUTTONDOWN)
+            if (msg == Win32.WM_MOUSEACTIVATE) {
+                handled = true;
+                return new IntPtr(Win32.MA_NOACTIVATE); // 保持不夺取焦点，但强制投递鼠标按下事件
+            }
+            return IntPtr.Zero;
+        }
+
         private void BuildUI() {
             _rootCard = new Border {
                 CornerRadius = new CornerRadius(6),
                 Padding = new Thickness(6, 0, 8, 0),
                 Background = Brushes.Transparent,
-                VerticalAlignment = VerticalAlignment.Stretch
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Cursor = Cursors.Hand
             };
 
             Grid grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
@@ -2430,6 +3563,9 @@ namespace BodianTaskbarLyric {
 
             UpdateRotationState();
             UpdateVisibility();
+            if (_controlPopup != null) {
+                _controlPopup.ApplyTheme();
+            }
             _lastX = -9999;
             _lastY = -9999;
         }
@@ -2733,12 +3869,18 @@ namespace BodianTaskbarLyric {
                 _subText.Visibility = Visibility.Visible;
                 _mainText.Margin = new Thickness(0, 0, 0, 0);
                 UpdateRotationState();
+                if (_controlPopup != null) {
+                    _controlPopup.UpdateSong(song, cover);
+                }
             });
         }
 
         private void Engine_OnCoverChanged(ImageSource cover) {
             Dispatcher.Invoke(() => {
                 _coverBrush.ImageSource = cover != null ? cover : BodianEngine.DefaultCover;
+                if (_controlPopup != null) {
+                    _controlPopup.UpdateCover(cover);
+                }
             });
         }
 
