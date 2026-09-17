@@ -20,6 +20,7 @@ startup_err.log
 *.dmp
 *.tmp
 *.bak
+*.old
 *.swp
 *~
 

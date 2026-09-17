@@ -37,9 +37,9 @@ using System.Security.AccessControl;
 
 [assembly: AssemblyTitle("波点音乐专属任务栏歌词")]
 [assembly: AssemblyProduct("BodianTaskbarLyric")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
-[assembly: AssemblyInformationalVersion("1.1.0")]
+[assembly: AssemblyVersion("1.1.2.0")]
+[assembly: AssemblyFileVersion("1.1.2.0")]
+[assembly: AssemblyInformationalVersion("1.1.2")]
 
 namespace BodianTaskbarLyric {
 
@@ -47,7 +47,7 @@ namespace BodianTaskbarLyric {
     // 1. 配置数据模型 (Config Model)
     // ==========================================
     public class AppConfig {
-        public const string APP_VERSION = "1.1.0";
+        public const string APP_VERSION = "1.1.2";
         public string Version = APP_VERSION;
 
         public string PositionMode = "left"; // "weather_right", "left" 或 "center"
@@ -85,6 +85,7 @@ namespace BodianTaskbarLyric {
         public bool ShowTranslation = true;
         public bool RunAsAdmin = true;
         public bool SilentStart = true;
+        public bool DisableHardwareAcceleration = true;
 
         public static AppConfig Load(string path) {
             AppConfig cfg = new AppConfig();
@@ -163,6 +164,7 @@ namespace BodianTaskbarLyric {
                             if (b.ContainsKey("show_translation")) cfg.ShowTranslation = Convert.ToBoolean(b["show_translation"]);
                             if (b.ContainsKey("run_as_admin")) cfg.RunAsAdmin = Convert.ToBoolean(b["run_as_admin"]);
                             if (b.ContainsKey("silent_start")) cfg.SilentStart = Convert.ToBoolean(b["silent_start"]);
+                            if (b.ContainsKey("disable_hardware_acceleration")) cfg.DisableHardwareAcceleration = Convert.ToBoolean(b["disable_hardware_acceleration"]);
                         }
 
                         if (dict.ContainsKey("ui") && dict["ui"] is Dictionary<string, object>) {
@@ -231,7 +233,8 @@ namespace BodianTaskbarLyric {
                     { "hide_when_fullscreen", HideWhenFullscreen },
                     { "show_translation", ShowTranslation },
                     { "run_as_admin", RunAsAdmin },
-                    { "silent_start", SilentStart }
+                    { "silent_start", SilentStart },
+                    { "disable_hardware_acceleration", DisableHardwareAcceleration }
                 };
                 dict["ui"] = new Dictionary<string, object> {
                     { "theme", UITheme }
@@ -399,6 +402,7 @@ namespace BodianTaskbarLyric {
         public const int SW_RESTORE = 9;
 
         public const int WM_MOUSEACTIVATE = 0x0021;
+        public const int WM_MOUSEWHEEL = 0x020A;
         public const int MA_ACTIVATE = 1;
         public const int MA_ACTIVATEANDEAT = 2;
         public const int MA_NOACTIVATE = 3;
@@ -2654,19 +2658,28 @@ namespace BodianTaskbarLyric {
     // 6.5 迷你音乐控制卡片 (Lyric Control Popup)
     // ==========================================
     public class LyricControlPopup : Window {
-        private const double CARD_WIDTH = 350;
-        private const double CARD_HEIGHT = 150;
-        private const double PADDING = 16;
+        private const double CARD_WIDTH = 280;
+        private const double CARD_HEIGHT = 120;
+        private const double PADDING_H = 14;
+        private const double PADDING_TOP = 14;
+        private const double PADDING_BOTTOM = 8;
 
         private AppConfig _config;
         private BodianEngine _engine;
         private Action _onOpenSettings;
 
         private Border _cardBorder;
+        private Grid _cardShadowHost;
+        private ScaleTransform _cardScale;
         private Ellipse _coverEllipse;
         private ImageBrush _coverBrush;
         private TextBlock _titleText;
         private TextBlock _artistText;
+        private long _showTick = 0;
+        private bool _isOpen = false;
+        private bool _isClosing = false;
+        public bool IsOpen { get { return _isOpen; } }
+        private Microsoft.Win32.UserPreferenceChangedEventHandler _userPrefHandler;
 
         // 控制按钮
         private Border _btnSettings;
@@ -2674,18 +2687,12 @@ namespace BodianTaskbarLyric {
         private Border _btnPrev;
         private Border _btnPlayPause;
         private Border _btnNext;
-        private Border _btnVolDown;
-        private Border _btnVolUp;
 
         private System.Windows.Shapes.Path _iconPrev;
         private System.Windows.Shapes.Path _iconPlayPause;
         private System.Windows.Shapes.Path _iconNext;
-        private System.Windows.Shapes.Path _iconVolDown;
-        private System.Windows.Shapes.Path _iconVolUp;
 
         // 播放进度
-        private TextBlock _textCurTime;
-        private TextBlock _textTotalTime;
         private Grid _progressContainer;
         private Border _progressTrack;
         private Border _progressFill;
@@ -2705,8 +2712,6 @@ namespace BodianTaskbarLyric {
         private Geometry _geomPause;
         private Geometry _geomPrev;
         private Geometry _geomNext;
-        private Geometry _geomVolDown;
-        private Geometry _geomVolUp;
 
         public long LastHideTick { get; private set; }
 
@@ -2722,16 +2727,20 @@ namespace BodianTaskbarLyric {
             ApplyTheme();
 
             Deactivated += (s, e) => {
-                LastHideTick = Environment.TickCount;
-                if (_progressTimer != null) _progressTimer.Stop();
-                Hide();
+                if (Environment.TickCount - _showTick < 280) {
+                    Program.Log("[Popup] Ignored spurious Deactivated during opening (tick diff: " + (Environment.TickCount - _showTick) + ")");
+                    return;
+                }
+                Program.Log("[Popup] Deactivated -> close");
+                ClosePopup();
             };
 
-            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => {
+            _userPrefHandler = (s, e) => {
                 try {
                     Dispatcher.Invoke(new Action(() => ApplyTheme()));
                 } catch { }
             };
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += _userPrefHandler;
 
             _progressTimer = new DispatcherTimer();
             _progressTimer.Interval = TimeSpan.FromMilliseconds(150);
@@ -2742,10 +2751,49 @@ namespace BodianTaskbarLyric {
             };
         }
 
+        // 关闭弹窗并安全销毁窗口句柄，彻底释放表面与资源
+        public void ClosePopup() {
+            if (!_isOpen || _isClosing) return;
+            _isClosing = true;
+            _isOpen = false;
+            LastHideTick = Environment.TickCount;
+
+            if (_progressTimer != null) {
+                _progressTimer.Stop();
+                _progressTimer = null;
+            }
+
+            if (_userPrefHandler != null) {
+                try {
+                    Microsoft.Win32.SystemEvents.UserPreferenceChanged -= _userPrefHandler;
+                } catch { }
+                _userPrefHandler = null;
+            }
+
+            try {
+                Close();
+            } catch { }
+        }
+
+        protected override void OnClosed(EventArgs e) {
+            base.OnClosed(e);
+            _isOpen = false;
+            if (_progressTimer != null) {
+                _progressTimer.Stop();
+                _progressTimer = null;
+            }
+            if (_userPrefHandler != null) {
+                try {
+                    Microsoft.Win32.SystemEvents.UserPreferenceChanged -= _userPrefHandler;
+                } catch { }
+                _userPrefHandler = null;
+            }
+        }
+
         private void InitWindow() {
             Title = "BodianMiniControl";
-            Width = CARD_WIDTH + PADDING * 2;
-            Height = CARD_HEIGHT + PADDING * 2;
+            Width = CARD_WIDTH + PADDING_H * 2;
+            Height = CARD_HEIGHT + PADDING_TOP + PADDING_BOTTOM;
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -2753,6 +2801,13 @@ namespace BodianTaskbarLyric {
             ShowInTaskbar = false;
             ResizeMode = ResizeMode.NoResize;
             FontFamily = new FontFamily("Segoe UI Variable Text, PingFang SC, Microsoft YaHei UI");
+
+            // 标记为工具窗口，不出现在 Alt+Tab 任务切换列表中；保留可激活属性以支持失焦关闭
+            try {
+                IntPtr hwnd = new WindowInteropHelper(this).EnsureHandle();
+                int exStyle = Win32.GetWindowLong(hwnd, Win32.GWL_EXSTYLE);
+                Win32.SetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE, new IntPtr(exStyle | Win32.WS_EX_TOOLWINDOW));
+            } catch { }
         }
 
         private void InitGeometries() {
@@ -2760,21 +2815,15 @@ namespace BodianTaskbarLyric {
             _geomNext = Geometry.Parse("M 1,1.5 L 10.5,7 L 1,12.5 Z M 10.5,1.5 L 10.5,12.5");
             _geomPlay = Geometry.Parse("M 3.5,1.5 L 13,7.5 L 3.5,13.5 Z");
             _geomPause = Geometry.Parse("M 3,1.5 L 5.5,1.5 L 5.5,13.5 L 3,13.5 Z M 8.5,1.5 L 11,1.5 L 11,13.5 L 8.5,13.5 Z");
-            _geomVolDown = Geometry.Parse("M 1,4.5 L 3.5,4.5 L 7,1.5 L 7,12.5 L 3.5,9.5 L 1,9.5 Z M 9.5,7 L 13,7");
-            _geomVolUp = Geometry.Parse("M 1,4.5 L 3.5,4.5 L 7,1.5 L 7,12.5 L 3.5,9.5 L 1,9.5 Z M 9.5,7 L 13.5,7 M 11.5,5 L 11.5,9");
         }
 
         private void BuildUI() {
             Grid rootGrid = new Grid();
 
-            _cardBorder = new Border {
-                Width = CARD_WIDTH,
-                Height = CARD_HEIGHT,
-                Margin = new Thickness(PADDING),
-                CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(14, 12, 14, 12),
-                BorderThickness = new Thickness(1),
-                SnapsToDevicePixels = true,
+            _cardScale = new ScaleTransform(0.94, 0.94);
+
+            // 阴影宿主：尺寸恒定（RenderTransform 不影响布局），专用于承载 DropShadowEffect。
+            _cardShadowHost = new Grid {
                 Effect = new DropShadowEffect {
                     BlurRadius = 14,
                     ShadowDepth = 2,
@@ -2782,6 +2831,19 @@ namespace BodianTaskbarLyric {
                     Opacity = 0.20,
                     Color = Colors.Black
                 }
+            };
+
+            _cardBorder = new Border {
+                Width = CARD_WIDTH,
+                Height = CARD_HEIGHT,
+                Margin = new Thickness(PADDING_H, PADDING_TOP, PADDING_H, PADDING_BOTTOM),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(14, 8, 14, 11),
+                BorderThickness = new Thickness(1),
+                SnapsToDevicePixels = true,
+                RenderTransformOrigin = new Point(0.5, 1.0),
+                RenderTransform = _cardScale,
+                Opacity = 0.0
             };
 
             Grid mainGrid = new Grid();
@@ -2824,7 +2886,7 @@ namespace BodianTaskbarLyric {
             _artistText = new TextBlock {
                 Text = "当前未在播放",
                 FontSize = 11.5,
-                Margin = new Thickness(0, 3, 0, 0),
+                Margin = new Thickness(0, 1.5, 0, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
             textPanel.Children.Add(_titleText);
@@ -2844,7 +2906,7 @@ namespace BodianTaskbarLyric {
             RenderOptions.SetBitmapScalingMode(appIconImg, BitmapScalingMode.HighQuality);
 
             _btnSettings = CreateMediaButton(appIconImg, 26, () => {
-                Hide();
+                ClosePopup();
                 if (_onOpenSettings != null) _onOpenSettings();
             }, "打开歌词设置中心");
             _btnSettings.VerticalAlignment = VerticalAlignment.Top;
@@ -2855,16 +2917,15 @@ namespace BodianTaskbarLyric {
             Grid.SetRow(topRow, 0);
             mainGrid.Children.Add(topRow);
 
-            // 第二行
+            // 第二行：控制按钮 (左侧打开波点客户端，右侧播放控制)
             Grid btnGrid = new Grid {
-                Margin = new Thickness(0, 9, 0, 0),
+                Margin = new Thickness(0, 5, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
             btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            // 左侧
+            // 左侧：打开波点音乐客户端
             Image bodianClientImg = new Image {
                 Width = 20,
                 Height = 20,
@@ -2881,10 +2942,10 @@ namespace BodianTaskbarLyric {
             Grid.SetColumn(_btnOpenApp, 0);
             btnGrid.Children.Add(_btnOpenApp);
 
-            // 中间
-            StackPanel centerPlaybackPanel = new StackPanel {
+            // 右侧：上一首、播放/暂停、下一首 (右移)
+            StackPanel rightPlaybackPanel = new StackPanel {
                 Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Center
+                HorizontalAlignment = HorizontalAlignment.Right
             };
 
             _iconPrev = new System.Windows.Shapes.Path {
@@ -2922,85 +2983,40 @@ namespace BodianTaskbarLyric {
                 PlayerController.NextTrack();
             }, "下一首");
 
-            centerPlaybackPanel.Children.Add(_btnPrev);
-            centerPlaybackPanel.Children.Add(_btnPlayPause);
-            centerPlaybackPanel.Children.Add(_btnNext);
-            Grid.SetColumn(centerPlaybackPanel, 1);
-            btnGrid.Children.Add(centerPlaybackPanel);
-
-            // 右侧：音量减与音量加
-            StackPanel rightVolPanel = new StackPanel {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-
-            _iconVolDown = new System.Windows.Shapes.Path {
-                Data = _geomVolDown,
-                Stretch = Stretch.Uniform,
-                Width = 13,
-                Height = 13,
-                StrokeThickness = 1.2
-            };
-            _btnVolDown = CreateMediaButton(_iconVolDown, 28, () => {
-                PlayerController.VolumeDown();
-            }, "降低音量");
-
-            _iconVolUp = new System.Windows.Shapes.Path {
-                Data = _geomVolUp,
-                Stretch = Stretch.Uniform,
-                Width = 13,
-                Height = 13,
-                StrokeThickness = 1.2
-            };
-            _btnVolUp = CreateMediaButton(_iconVolUp, 28, () => {
-                PlayerController.VolumeUp();
-            }, "增加音量");
-
-            rightVolPanel.Children.Add(_btnVolDown);
-            rightVolPanel.Children.Add(_btnVolUp);
-            Grid.SetColumn(rightVolPanel, 2);
-            btnGrid.Children.Add(rightVolPanel);
+            rightPlaybackPanel.Children.Add(_btnPrev);
+            rightPlaybackPanel.Children.Add(_btnPlayPause);
+            rightPlaybackPanel.Children.Add(_btnNext);
+            Grid.SetColumn(rightPlaybackPanel, 1);
+            btnGrid.Children.Add(rightPlaybackPanel);
 
             Grid.SetRow(btnGrid, 1);
             mainGrid.Children.Add(btnGrid);
 
-            // 第三行
-            Grid progressRow = new Grid {
-                Margin = new Thickness(0, 11, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            progressRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            progressRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            progressRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            _textCurTime = new TextBlock {
-                Text = "00:00",
-                FontSize = 10.5,
-                FontFamily = new FontFamily("Consolas, Segoe UI"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 8, 0)
-            };
-            Grid.SetColumn(_textCurTime, 0);
-            progressRow.Children.Add(_textCurTime);
-
+            // 第三行：进度条 (移除两侧数字，全宽铺开，紧凑行距)
             _progressContainer = new Grid {
-                Height = 16,
+                Height = 14,
                 Cursor = Cursors.Hand,
                 Background = Brushes.Transparent,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 6, 0, 0)
+            };
+            _progressContainer.SizeChanged += (s, e) => {
+                if (e.NewSize.Width > 0) {
+                    UpdateProgressUI();
+                }
             };
 
             _progressTrack = new Border {
-                Height = 4,
-                CornerRadius = new CornerRadius(2),
+                Height = 3.5,
+                CornerRadius = new CornerRadius(1.75),
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Stretch
             };
             _progressContainer.Children.Add(_progressTrack);
 
             _progressFill = new Border {
-                Height = 4,
-                CornerRadius = new CornerRadius(2),
+                Height = 3.5,
+                CornerRadius = new CornerRadius(1.75),
                 Background = _progressFillBrush,
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -3009,17 +3025,17 @@ namespace BodianTaskbarLyric {
             _progressContainer.Children.Add(_progressFill);
 
             _progressThumb = new Border {
-                Width = 10,
-                Height = 10,
-                CornerRadius = new CornerRadius(5),
+                Width = 8,
+                Height = 8,
+                CornerRadius = new CornerRadius(4),
                 Background = Brushes.White,
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(-5, 0, 0, 0),
+                Margin = new Thickness(0, 0, 0, 0),
                 Effect = new DropShadowEffect {
-                    BlurRadius = 4,
-                    ShadowDepth = 1,
-                    Opacity = 0.3,
+                    BlurRadius = 2.5,
+                    ShadowDepth = 0.8,
+                    Opacity = 0.25,
                     Color = Colors.Black
                 }
             };
@@ -3027,15 +3043,15 @@ namespace BodianTaskbarLyric {
 
             Action<System.Windows.Input.MouseEventArgs> handleProgressInput = (e) => {
                 double w = _progressContainer.ActualWidth;
-                if (w <= 0) return;
+                if (w <= 8) return;
                 Point p = e.GetPosition(_progressContainer);
                 double pct = Math.Max(0.0, Math.Min(1.0, p.X / w));
                 double total = (_engine != null && _engine.CurrentSong != null) ? _engine.CurrentSong.Duration : 0;
                 double cur = total * pct;
 
-                _progressFill.Width = w * pct;
-                _progressThumb.Margin = new Thickness(Math.Max(0, w * pct - 5), 0, 0, 0);
-                _textCurTime.Text = FormatTime(cur);
+                double thumbLeft = (w - 8.0) * pct;
+                _progressThumb.Margin = new Thickness(thumbLeft, 0, 0, 0);
+                _progressFill.Width = (pct <= 0) ? 0 : ((pct >= 1.0) ? w : (thumbLeft + 4.0));
             };
 
             _progressContainer.MouseLeftButtonDown += (s, e) => {
@@ -3074,24 +3090,12 @@ namespace BodianTaskbarLyric {
                 _isDraggingProgress = false;
             };
 
-            Grid.SetColumn(_progressContainer, 1);
-            progressRow.Children.Add(_progressContainer);
-
-            _textTotalTime = new TextBlock {
-                Text = "00:00",
-                FontSize = 10.5,
-                FontFamily = new FontFamily("Consolas, Segoe UI"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(8, 0, 0, 0)
-            };
-            Grid.SetColumn(_textTotalTime, 2);
-            progressRow.Children.Add(_textTotalTime);
-
-            Grid.SetRow(progressRow, 2);
-            mainGrid.Children.Add(progressRow);
+            Grid.SetRow(_progressContainer, 2);
+            mainGrid.Children.Add(_progressContainer);
 
             _cardBorder.Child = mainGrid;
-            rootGrid.Children.Add(_cardBorder);
+            _cardShadowHost.Children.Add(_cardBorder);
+            rootGrid.Children.Add(_cardShadowHost);
             Content = rootGrid;
         }
 
@@ -3161,15 +3165,11 @@ namespace BodianTaskbarLyric {
 
             _titleText.Foreground = _primaryTextBrush;
             _artistText.Foreground = _secondaryTextBrush;
-            _textCurTime.Foreground = _secondaryTextBrush;
-            _textTotalTime.Foreground = _secondaryTextBrush;
             if (_progressTrack != null) _progressTrack.Background = _progressTrackBrush;
 
             if (_iconPrev != null) { _iconPrev.Fill = _iconBrush; _iconPrev.Stroke = _iconBrush; }
             if (_iconPlayPause != null) { _iconPlayPause.Fill = _iconBrush; _iconPlayPause.Stroke = _iconBrush; }
             if (_iconNext != null) { _iconNext.Fill = _iconBrush; _iconNext.Stroke = _iconBrush; }
-            if (_iconVolDown != null) { _iconVolDown.Fill = _iconBrush; _iconVolDown.Stroke = _iconBrush; }
-            if (_iconVolUp != null) { _iconVolUp.Fill = _iconBrush; _iconVolUp.Stroke = _iconBrush; }
         }
 
         private static string FormatTime(double seconds) {
@@ -3185,14 +3185,21 @@ namespace BodianTaskbarLyric {
             double curSec = _engine.CurrentPlaybackSeconds;
             double totalSec = (_engine.CurrentSong != null) ? _engine.CurrentSong.Duration : 0;
 
-            _textCurTime.Text = FormatTime(curSec);
-            _textTotalTime.Text = FormatTime(totalSec);
+            if (_progressContainer != null && totalSec > 0) {
+                _progressContainer.ToolTip = string.Format("{0} / {1}", FormatTime(curSec), FormatTime(totalSec));
+            } else if (_progressContainer != null) {
+                _progressContainer.ToolTip = null;
+            }
 
-            double w = _progressContainer != null ? _progressContainer.ActualWidth : 0;
-            if (w > 0 && totalSec > 0) {
+            double w = (_progressContainer != null && _progressContainer.ActualWidth > 0) 
+                ? _progressContainer.ActualWidth 
+                : (CARD_WIDTH - PADDING_H * 2 - 2); // 250px 回退宽度，确保首帧布局完成前进度条和滑块立即就位
+
+            if (w > 8 && totalSec > 0) {
                 double pct = Math.Max(0.0, Math.Min(1.0, curSec / totalSec));
-                _progressFill.Width = w * pct;
-                _progressThumb.Margin = new Thickness(Math.Max(0, w * pct - 5), 0, 0, 0);
+                double thumbLeft = (w - 8.0) * pct;
+                _progressThumb.Margin = new Thickness(thumbLeft, 0, 0, 0);
+                _progressFill.Width = (pct <= 0) ? 0 : ((pct >= 1.0) ? w : (thumbLeft + 4.0));
             } else {
                 _progressFill.Width = 0;
                 _progressThumb.Margin = new Thickness(0, 0, 0, 0);
@@ -3237,6 +3244,8 @@ namespace BodianTaskbarLyric {
         }
 
         public void ShowNearOverlay(Window overlay) {
+            _showTick = Environment.TickCount;
+            Program.Log("[Popup] ShowNearOverlay called, tick=" + _showTick);
             ApplyTheme();
 
             if (_engine != null) {
@@ -3248,13 +3257,27 @@ namespace BodianTaskbarLyric {
             }
 
             UpdateProgressUI();
-            if (_progressTimer != null) _progressTimer.Start();
 
-            // 计算卡片在屏幕上的精确物理/逻辑坐标 (包含四周透明缓冲保护)
-            double cardCenterX = overlay.Left + (overlay.Width - CARD_WIDTH) / 2.0;
-            double winX = cardCenterX - PADDING;
-            double cardBottomY = overlay.Top - 8.0;
-            double winY = cardBottomY - CARD_HEIGHT - PADDING;
+            // 核心对齐：卡片边框与歌词封面左边缘精准对齐
+            double coverLeftDips;
+            TaskbarOverlayWindow tbOverlay = overlay as TaskbarOverlayWindow;
+            if (tbOverlay != null) {
+                coverLeftDips = tbOverlay.GetCoverLeftDips();
+            } else {
+                coverLeftDips = overlay.Left + 6.0;
+            }
+
+            // 窗口 X 坐标：让 _cardBorder 的左边缘 (偏移 PADDING_H) 与歌词封面左边缘完全重合
+            double winX = coverLeftDips - PADDING_H;
+
+            // 垂直精准对接：弹窗底边缘紧贴任务栏顶边缘（零重叠，杜绝鼠标点击穿透/捕获干扰）
+            bool isPoppingDownwards = (overlay.Top < 100);
+            double winY;
+            if (isPoppingDownwards) {
+                winY = overlay.Top + overlay.Height;
+            } else {
+                winY = overlay.Top - Height;
+            }
 
             Rect workArea = SystemParameters.WorkArea;
             try {
@@ -3272,20 +3295,76 @@ namespace BodianTaskbarLyric {
                 }
             } catch { }
 
-            // 水平边界贴边保护
-            if (winX + PADDING < workArea.Left + 8) winX = workArea.Left + 8 - PADDING;
-            if (winX + PADDING + CARD_WIDTH > workArea.Right - 8) winX = workArea.Right - 8 - CARD_WIDTH - PADDING;
-
-            // 垂直边界保护 (若顶部空间不足，则在下方弹出)
-            if (winY + PADDING < workArea.Top + 8) {
-                winY = overlay.Top + overlay.Height + 8.0 - PADDING;
-            }
+            // 水平屏幕边界保护
+            if (winX + PADDING_H < workArea.Left + 8) winX = workArea.Left + 8 - PADDING_H;
+            if (winX + PADDING_H + CARD_WIDTH > workArea.Right - 8) winX = workArea.Right - 8 - CARD_WIDTH - PADDING_H;
 
             Left = winX;
             Top = winY;
 
+            // 变换原点：下方弹出以顶部左侧为原点，上方弹出以底部左侧为原点
+            if (_cardBorder != null) {
+                _cardBorder.RenderTransformOrigin = isPoppingDownwards ? new Point(0.0, 0.0) : new Point(0.0, 1.0);
+            }
+
+            // 预设入场初始状态 (微缩放 0.94 + 纯透明)
+            if (_cardScale != null) {
+                _cardScale.ScaleX = 0.94;
+                _cardScale.ScaleY = 0.94;
+            }
+            if (_cardBorder != null) {
+                _cardBorder.Opacity = 0.0;
+            }
+
+            _isOpen = true;
             Show();
             Activate();
+            UpdateLayout();
+            UpdateProgressUI();
+            PlayEntranceAnimation();
+        }
+
+        private void PlayEntranceAnimation() {
+            if (_cardBorder == null || _cardScale == null) return;
+
+            CubicEase ease = new CubicEase();
+            ease.EasingMode = EasingMode.EaseOut;
+            TimeSpan duration = TimeSpan.FromMilliseconds(180);
+
+            DoubleAnimation animOpacity = new DoubleAnimation();
+            animOpacity.From = 0.0;
+            animOpacity.To = 1.0;
+            animOpacity.Duration = duration;
+            animOpacity.EasingFunction = ease;
+            animOpacity.FillBehavior = FillBehavior.HoldEnd;
+
+            DoubleAnimation animScaleX = new DoubleAnimation();
+            animScaleX.From = 0.94;
+            animScaleX.To = 1.0;
+            animScaleX.Duration = duration;
+            animScaleX.EasingFunction = ease;
+            animScaleX.FillBehavior = FillBehavior.HoldEnd;
+
+            DoubleAnimation animScaleY = new DoubleAnimation();
+            animScaleY.From = 0.94;
+            animScaleY.To = 1.0;
+            animScaleY.Duration = duration;
+            animScaleY.EasingFunction = ease;
+            animScaleY.FillBehavior = FillBehavior.HoldEnd;
+
+            // 分数缩放（0.94→1.0）与像素对齐互斥：动画期间必须关闭 SnapsToDevicePixels，
+            // 否则 1px 边框会在设备像素间反复吸附/脱离，视觉上表现为整块内容发颤。
+            _cardBorder.SnapsToDevicePixels = false;
+
+            animScaleY.Completed += (s, e) => {
+                if (_cardBorder != null) _cardBorder.SnapsToDevicePixels = true;
+                // 进度条与进度滑块自身带阴影，动画期间不启动刷新，避免 180ms 内插入额外重布局
+                if (_progressTimer != null && IsVisible) _progressTimer.Start();
+            };
+
+            _cardBorder.BeginAnimation(UIElement.OpacityProperty, animOpacity);
+            _cardScale.BeginAnimation(ScaleTransform.ScaleXProperty, animScaleX);
+            _cardScale.BeginAnimation(ScaleTransform.ScaleYProperty, animScaleY);
         }
     }
 
@@ -3297,8 +3376,8 @@ namespace BodianTaskbarLyric {
         private string _configPath;
         private BodianEngine _engine;
         private DispatcherTimer _taskbarFollowTimer;
-
         private Border _rootCard;
+        private long _lastLyricClickTick = 0;
         // 圆形黑胶封面与旋转动效
         private Ellipse _coverEllipse;
         private ImageBrush _coverBrush;
@@ -3331,6 +3410,9 @@ namespace BodianTaskbarLyric {
         private int _lastW = -9999;
         private int _lastH = -9999;
 
+        // 核心防穿透画刷：Alpha=1 (视觉完全透明但DWM严格判定为有效命中，彻底根治文字间隙穿透到任务栏的Bug)
+        private static readonly Brush HitTestTransparentBrush = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
+
         private void GetDpiScale(out double dpiX, out double dpiY) {
             dpiX = 1.0;
             dpiY = 1.0;
@@ -3354,7 +3436,7 @@ namespace BodianTaskbarLyric {
             InitWindow();
             BuildUI();
             ApplyConfig(_config);
-            _controlPopup = new LyricControlPopup(_config, _engine, _onOpenSettings);
+            _controlPopup = null;
 
             // 初始化当前歌曲信息
             if (_engine.CurrentSong != null) {
@@ -3374,7 +3456,7 @@ namespace BodianTaskbarLyric {
             _engine.OnPlayStateChanged += playing => {
                 Dispatcher.Invoke(() => {
                     UpdateRotationState();
-                    if (_controlPopup != null) _controlPopup.UpdatePlayState(playing);
+                    if (_controlPopup != null && _controlPopup.IsOpen) _controlPopup.UpdatePlayState(playing);
                 });
             };
             _engine.OnProcessStateChanged += running => {
@@ -3403,7 +3485,7 @@ namespace BodianTaskbarLyric {
             Height = Math.Max(48, _config.Height);
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
-            Background = Brushes.Transparent;
+            Background = HitTestTransparentBrush;
             Topmost = true;
             ShowInTaskbar = false;
             ResizeMode = ResizeMode.NoResize;
@@ -3436,17 +3518,38 @@ namespace BodianTaskbarLyric {
             };
 
             PreviewMouseLeftButtonDown += (s, e) => {
-                if (_controlPopup != null) {
-                    if (_controlPopup.IsVisible) {
-                        _controlPopup.Hide();
-                    } else {
-                        if (Environment.TickCount - _controlPopup.LastHideTick < 80) {
-                            return;
-                        }
-                        _controlPopup.ShowNearOverlay(this);
-                    }
+                long now = Environment.TickCount;
+                if (now - _lastLyricClickTick < 220) {
+                    Program.Log("[Click] Ignored rapid click within 220ms");
                     e.Handled = true;
+                    return;
                 }
+                _lastLyricClickTick = now;
+
+                if (_controlPopup != null && _controlPopup.IsOpen) {
+                    Program.Log("[Click] Open -> CloseCurrentPopup()");
+                    CloseCurrentPopup();
+                } else {
+                    Program.Log("[Click] Invoking OpenControlPopup");
+                    OpenControlPopup();
+                }
+                e.Handled = true;
+            };
+
+            // 歌词滚轮事件调节系统音量 (上滚加音量，下滚减音量，无悬停toast提示)
+            PreviewMouseWheel += (s, e) => {
+                if (e.Delta > 0) {
+                    int steps = Math.Max(1, e.Delta / 120);
+                    for (int i = 0; i < steps; i++) {
+                        PlayerController.VolumeUp();
+                    }
+                } else if (e.Delta < 0) {
+                    int steps = Math.Max(1, (-e.Delta) / 120);
+                    for (int i = 0; i < steps; i++) {
+                        PlayerController.VolumeDown();
+                    }
+                }
+                e.Handled = true;
             };
 
             // 右键菜单
@@ -3476,7 +3579,10 @@ namespace BodianTaskbarLyric {
             };
 
             System.Windows.Controls.MenuItem miExit = new System.Windows.Controls.MenuItem { Header = "❌ 退出歌词" };
-            miExit.Click += (s, e) => Application.Current.Shutdown();
+            miExit.Click += (s, e) => {
+                CloseCurrentPopup();
+                Application.Current.Shutdown();
+            };
 
             menu.Items.Add(miSettings);
             menu.Items.Add(miMode);
@@ -3485,12 +3591,57 @@ namespace BodianTaskbarLyric {
             ContextMenu = menu;
         }
 
+        private void OpenControlPopup() {
+            CloseCurrentPopup();
+            _controlPopup = new LyricControlPopup(_config, _engine, _onOpenSettings);
+            _controlPopup.Closed += (s, e) => {
+                if (_controlPopup == s) {
+                    _controlPopup = null;
+                }
+            };
+            _controlPopup.ShowNearOverlay(this);
+        }
+
+        private void CloseCurrentPopup() {
+            if (_controlPopup != null) {
+                try {
+                    _controlPopup.ClosePopup();
+                } catch { }
+                _controlPopup = null;
+            }
+        }
+
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
             // 彻底根除 WS_EX_NOACTIVATE 窗口点击被操作系统吃掉的 Bug (Windows 默认可能返回 MA_NOACTIVATEANDEAT 导致完全不派发 WM_LBUTTONDOWN)
             if (msg == Win32.WM_MOUSEACTIVATE) {
                 handled = true;
                 return new IntPtr(Win32.MA_NOACTIVATE); // 保持不夺取焦点，但强制投递鼠标按下事件
             }
+
+            // 歌词滚轮事件调节系统音量 (上滚增加音量，下滚降低音量，无悬停toast提示)
+            if (msg == Win32.WM_MOUSEWHEEL) {
+                short delta = (short)((wParam.ToInt64() >> 16) & 0xffff);
+                if (delta > 0) {
+                    int steps = Math.Max(1, delta / 120);
+                    for (int i = 0; i < steps; i++) {
+                        PlayerController.VolumeUp();
+                    }
+                } else if (delta < 0) {
+                    int steps = Math.Max(1, (-delta) / 120);
+                    for (int i = 0; i < steps; i++) {
+                        PlayerController.VolumeDown();
+                    }
+                }
+                handled = true;
+                return IntPtr.Zero;
+            }
+
+            // 彻底杜绝文字间隙穿透到任务栏：返回客户区命中
+            if (msg == 0x0084) { // WM_NCHITTEST
+                handled = true;
+                return new IntPtr(1); // HTCLIENT
+            }
+
             return IntPtr.Zero;
         }
 
@@ -3498,12 +3649,12 @@ namespace BodianTaskbarLyric {
             _rootCard = new Border {
                 CornerRadius = new CornerRadius(6),
                 Padding = new Thickness(6, 0, 8, 0),
-                Background = Brushes.Transparent,
+                Background = HitTestTransparentBrush,
                 VerticalAlignment = VerticalAlignment.Stretch,
                 Cursor = Cursors.Hand
             };
 
-            Grid grid = new Grid { VerticalAlignment = VerticalAlignment.Center };
+            Grid grid = new Grid { VerticalAlignment = VerticalAlignment.Center, Background = HitTestTransparentBrush };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -3531,7 +3682,8 @@ namespace BodianTaskbarLyric {
             grid.Children.Add(_coverEllipse);
 
             _lyricPanel = new StackPanel {
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = HitTestTransparentBrush
             };
             _textTranslate = new TranslateTransform(0, 0);
             _lyricPanel.RenderTransform = _textTranslate;
@@ -3574,6 +3726,27 @@ namespace BodianTaskbarLyric {
 
             _rootCard.Child = grid;
             Content = _rootCard;
+        }
+
+        public double GetCoverLeftDips() {
+            try {
+                double dpiX = 1.0;
+                PresentationSource src = PresentationSource.FromVisual(this);
+                if (src != null && src.CompositionTarget != null) {
+                    dpiX = src.CompositionTarget.TransformToDevice.M11;
+                }
+
+                if (_coverEllipse != null && _coverEllipse.IsVisible) {
+                    Point screenPt = _coverEllipse.PointToScreen(new Point(0, 0));
+                    return screenPt.X / dpiX;
+                }
+
+                Win32.RECT rc;
+                if (Win32.GetWindowRect(_hwnd, out rc)) {
+                    return (rc.Left / dpiX) + 6.0;
+                }
+            } catch { }
+            return Left + 6.0;
         }
 
         // 核心要求 3: 封面旋转动效 (采用独立定时器驱动，杜绝 Visibility.Collapsed 导致动画脱轨故障)
@@ -3689,12 +3862,12 @@ namespace BodianTaskbarLyric {
             if (_config.ShowBackgroundCard) {
                 _rootCard.Background = (Brush)new BrushConverter().ConvertFromString(_config.BgCardColor);
             } else {
-                _rootCard.Background = Brushes.Transparent;
+                _rootCard.Background = HitTestTransparentBrush;
             }
 
             UpdateRotationState();
             UpdateVisibility();
-            if (_controlPopup != null) {
+            if (_controlPopup != null && _controlPopup.IsOpen) {
                 _controlPopup.ApplyTheme();
             }
             _lastX = -9999;
@@ -4020,7 +4193,7 @@ namespace BodianTaskbarLyric {
                 _subText.Visibility = Visibility.Visible;
                 _mainText.Margin = new Thickness(0, 0, 0, 0);
                 UpdateRotationState();
-                if (_controlPopup != null) {
+                if (_controlPopup != null && _controlPopup.IsOpen) {
                     _controlPopup.UpdateSong(song, cover);
                 }
             });
@@ -4029,7 +4202,7 @@ namespace BodianTaskbarLyric {
         private void Engine_OnCoverChanged(ImageSource cover) {
             Dispatcher.Invoke(() => {
                 _coverBrush.ImageSource = cover != null ? cover : BodianEngine.DefaultCover;
-                if (_controlPopup != null) {
+                if (_controlPopup != null && _controlPopup.IsOpen) {
                     _controlPopup.UpdateCover(cover);
                 }
             });
@@ -4181,6 +4354,7 @@ namespace BodianTaskbarLyric {
         private CapsuleSwitch _swAutoStart;
         private CapsuleSwitch _swSilentStart;
         private CapsuleSwitch _swRunAsAdmin;
+        private CapsuleSwitch _swDisableHardwareAcceleration;
 
         // 管理员权限与同步状态指示
         private Border _adminStatusCard;
@@ -4394,6 +4568,7 @@ namespace BodianTaskbarLyric {
             if (_swHideWhenFullscreen != null) _swHideWhenFullscreen.ApplyTheme(isDark);
             if (_swAutoStart != null) _swAutoStart.ApplyTheme(isDark);
             if (_swRunAsAdmin != null) _swRunAsAdmin.ApplyTheme(isDark);
+            if (_swDisableHardwareAcceleration != null) _swDisableHardwareAcceleration.ApplyTheme(isDark);
 
             if (_songCoverEllipse != null) {
                 _songCoverEllipse.Stroke = isDark ? new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(25, 0, 0, 0));
@@ -5162,6 +5337,17 @@ namespace BodianTaskbarLyric {
             };
             form4.Children.Add(CreateOptionCard("默认以管理员权限运行 (推荐)", "避免播放器提权后进度不同步", _swRunAsAdmin));
 
+            _swDisableHardwareAcceleration = new CapsuleSwitch();
+            _swDisableHardwareAcceleration.Checked += (s, e) => {
+                _config.DisableHardwareAcceleration = true;
+                _config.Save(_configPath);
+            };
+            _swDisableHardwareAcceleration.Unchecked += (s, e) => {
+                _config.DisableHardwareAcceleration = false;
+                _config.Save(_configPath);
+            };
+            form4.Children.Add(CreateOptionCard("禁用 GPU 硬件加速 (软件渲染)", "推荐开启，避免占用显卡导致无法切换至独显直连/仅限英伟达模式 (需重启)", _swDisableHardwareAcceleration));
+
             form4.Children.Add(CreateAdminStatusCard());
 
             _btnExitApp = UIHelper.CreateRoundedButton("❌ 退出任务栏歌词程序",
@@ -5862,6 +6048,7 @@ namespace BodianTaskbarLyric {
             _swAutoStart.SetChecked(Win32.IsAutoStartEnabled(), false);
             _swSilentStart.SetChecked(_config.SilentStart, false);
             _swRunAsAdmin.SetChecked(_config.RunAsAdmin, false);
+            _swDisableHardwareAcceleration.SetChecked(_config.DisableHardwareAcceleration, false);
             UpdateAdminStatusCard();
 
             ApplyUITheme(_config.UITheme);
@@ -5913,6 +6100,7 @@ namespace BodianTaskbarLyric {
             _config.HideWhenFullscreen = (_swHideWhenFullscreen.IsChecked == true);
             _config.SilentStart = (_swSilentStart.IsChecked == true);
             _config.RunAsAdmin = (_swRunAsAdmin.IsChecked == true);
+            _config.DisableHardwareAcceleration = (_swDisableHardwareAcceleration.IsChecked == true);
 
             Win32.SetAutoStart(_swAutoStart.IsChecked == true);
             _config.Save(_configPath);
@@ -6069,6 +6257,14 @@ namespace BodianTaskbarLyric {
                 if (!isNewInstance) {
                     Log("Mutex already held, exiting.");
                     return;
+                }
+
+                if (config.DisableHardwareAcceleration) {
+                    RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+                    Log("[Init] ProcessRenderMode set to SoftwareOnly (GPU hardware acceleration disabled).");
+                } else {
+                    RenderOptions.ProcessRenderMode = RenderMode.Default;
+                    Log("[Init] ProcessRenderMode set to Default (GPU hardware acceleration enabled).");
                 }
 
                 Application app = new Application();
