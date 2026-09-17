@@ -4,7 +4,7 @@ set REFS=System.Xaml.dll,System.Web.Extensions.dll,System.Windows.Forms.dll,Syst
 
 echo Compiling BodianTaskbarLyric.exe with Settings UI and Icon...
 if exist "%~dp0BodianTaskbarLyric.exe.tmp" del /f /q "%~dp0BodianTaskbarLyric.exe.tmp"
-%CSC% /target:winexe /optimize+ /platform:x64 /win32icon:"%~dp0assets\app.ico" /resource:"%~dp0assets\ico.png",ico.png /resource:"%~dp0assets\bodian_client.png",bodian_client.png /r:%REFS% /out:"%~dp0BodianTaskbarLyric.exe.tmp" "%~dp0BodianTaskbarLyric.cs"
+%CSC% /target:winexe /optimize+ /platform:x64 /win32icon:"%~dp0assets\app.ico" /resource:"%~dp0assets\ico.png",ico.png /resource:"%~dp0assets\bodian_client.png",bodian_client.png /r:%REFS% /out:"%~dp0BodianTaskbarLyric.exe.tmp" /recurse:"%~dp0src\*.cs"
 
 if %ERRORLEVEL% equ 0 (
     if exist "%~dp0BodianTaskbarLyric.exe.old" del /f /q "%~dp0BodianTaskbarLyric.exe.old" 2>nul
